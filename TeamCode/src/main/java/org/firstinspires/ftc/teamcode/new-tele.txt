@@ -1,0 +1,1072 @@
+package org.firstinspires.ftc.teamcode;
+import com.bylazar.configurables.annotations.Configurable;
+import com.bylazar.telemetry.TelemetryManager;
+import com.qualcomm.hardware.limelightvision.LLResult;
+import com.qualcomm.hardware.limelightvision.Limelight3A;
+import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
+import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
+import com.qualcomm.robotcore.hardware.DcMotorEx;
+import com.qualcomm.robotcore.hardware.DcMotor;
+import com.qualcomm.robotcore.hardware.DcMotorSimple;
+import com.qualcomm.robotcore.hardware.Servo;
+import com.qualcomm.robotcore.util.ElapsedTime;
+import com.bylazar.telemetry.PanelsTelemetry;
+@TeleOp(name = "dyna jump")
+public class DynaJump extends LinearOpMode {
+    TelemetryManager.TelemetryWrapper panelsTelemetery = PanelsTelemetry.INSTANCE.getFtcTelemetry();
+    @Configurable
+    public static class Flywheel {
+        public static double kP = 0.0043;
+        public static double kI = 0.0001;
+        public static double kD = 0.00005;
+        public static double kF = 0.0004;
+        public static double targetVelocity = 0;
+        public static double integralMax = 0.3;
+    }
+    @Configurable
+    public static class Tracking {
+        public static double kP = 0.01;
+        public static double kI = 0.0001;
+        public static double kD = 0.0008;
+        public static double integralMax = 0.3;
+        public static double turretPower = 0.5;
+        public static double trackingSign = 1.0;
+        public static double minTx = -0.5;
+        public static double maxTx = 0.5;
+        public static boolean enableTracking = false;
+    }
+    @Configurable
+    public static class Turntable {
+        public static double manualPower = 0.3;
+        public static int minTicks = -314;
+        public static int maxTicks = 1004;
+        public static boolean enableWraparound = true;
+        public static double wraparoundKP = 0.015;
+        public static double wraparoundKI = 0.0;
+        public static double wraparoundKD = 0.0005;
+        public static double wraparoundMaxPower = 0.4;
+        public static double wraparoundTolerance = 10.0;
+        public static double wraparoundIntegralMax = 0.3;
+        public static double wraparoundTimeoutSec = 5.0;
+    }
+    @Configurable
+    public static class ServoFlicker {
+        public static double servoSpeed = 1;
+        public static double minPosition = 0.18;
+        public static double maxPosition = 0.41;
+        public static double flickUpWaitMs = 150;
+        public static double flickDownWaitMs = 150;
+        public static double postSpinWaitMs = 175;
+    }
+    @Configurable
+    public static class Transfer {
+        public static boolean autoEnterShootingAt3 = true;
+        public static boolean preventZeroBallTransfer = true;
+        public static double transferStageTimeoutMs = 5000;
+        public static boolean enableTransferTimeout = true;
+    }
+    @Configurable
+    public static class Spindexer {
+        public static double kP = 0.003;
+        public static double kI = 0.0001;
+        public static double kD = 0.0001;
+        public static double integralMax = 0.3;
+        public static double maxPower = 1.0;
+        public static double stepTicks = 183.333333333;
+        public static double shootingModeOffset = 91.66666666667;
+        public static double positionTolerance = 10.0;
+    }
+    @Configurable
+    public static class ManualSpindexer {
+        public static double power = 0.2;
+    }
+    @Configurable
+    public static class FlywheelEquation {
+        public static boolean enabled = false;
+        public static double a = 1.0;
+        public static double b = 2.0;
+        public static double c = 1250.0;
+        public static double minVelocity = 1200;
+        public static double maxVelocity = 1600;
+        public static double roundTo = 25.0;
+    }
+    @Configurable
+    public static class Velocities {
+        public static double closeRange = 1250;
+        public static double longRange = 1450;
+    }
+    @Configurable
+    public static class Intake {
+        public static double intakePower = 1.0;
+        public static double outtakePower = -1.0;
+        public static boolean autoPauseAfterShoot = true;
+        public static boolean enableColorDebug = false;
+        public static double outtakePulsePower = 0;
+        public static double outtakePulseMs = 400;
+    }
+    @Configurable
+    public static class Drive {
+        public static double maxSpeed = 1.0;
+        public static double turnSpeed = 1.0;
+    }
+
+    @Configurable
+    public static class PurpleSensor1 {
+        public static int redMin = 900;
+        public static int greenMin = 900;
+        public static int blueMin = 1700;
+    }
+
+    @Configurable
+    public static class GreenSensor1 {
+        public static int redMin = 250;
+        public static int greenMin = 1200;
+        public static int blueMin = 800;
+    }
+
+    @Configurable
+    public static class PurpleSensor2 {
+        public static int redMin = 500;
+        public static int greenMin = 500;
+        public static int blueMin = 900;
+    }
+
+    @Configurable
+    public static class GreenSensor2 {
+        public static int redMin = 250;
+        public static int greenMin = 800;
+        public static int blueMin = 500;
+    }
+    private DcMotorEx motor;
+    private DcMotorEx turntable;
+    private DcMotorEx spindexer;
+    private DcMotorEx intake;
+    private Servo servo;
+    private com.qualcomm.robotcore.hardware.ColorSensor colorSensor;
+    private com.qualcomm.robotcore.hardware.ColorSensor colorSensor2;
+    private DcMotorEx frontLeft;
+    private DcMotorEx frontRight;
+    private DcMotorEx backLeft;
+    private DcMotorEx backRight;
+    private Limelight3A limelight;
+    private double servoPosition = 0;
+    private double integralSum = 0;
+    private double lastError = 0;
+    private int spindexerStepCount = 0;
+    private boolean spindexerInShootingMode = false;
+    private int spindexerBaseOffset = 0;
+    private boolean spindexerManualActive = false;
+    private boolean lastSquareState = false;
+    private boolean lastDpadLeft = false;
+    private double trackingIntegralSum = 0;
+    private double trackingLastError = 0;
+    private double spindexerIntegralSum = 0;
+    private double spindexerLastError = 0;
+    private final ElapsedTime timer = new ElapsedTime();
+    private double lastTime = 0;
+    private boolean lastg1Triangle = false;
+    private boolean lastG1Circle = false;
+    private boolean lastG1Cross = false;
+    private boolean lastG2Triangle = false;
+    private boolean lastG2Cross = false;
+    private boolean lastG2DpadDown = false;
+    private boolean lastG2DpadUp = false;
+    private boolean lastG2DpadLeft = false;
+    private boolean lastG2DpadRight = false;
+    private boolean lastG2Options = false;
+    private boolean transferActive = false;
+    private int transferStage = 0;
+    private int flickCount = 0;
+    private int originalDetectedBalls = 0;
+    private double transferStageStartTime = 0;
+    private boolean shooterRumbled = false;
+    private boolean shootingMode = false;
+    private boolean intakeToggled = false;
+    private int detectedBalls = 0;
+    private String[] ballSlots = new String[3];
+    private boolean ballDetectedLastLoop = false;
+    private boolean manualSpinUsed = false;
+
+    private String[] currentPattern = {"green", "purple", "purple"};
+    private boolean flywheelEquationEnabled = false;
+    private boolean g2SpindexerManualActive = false;
+    private boolean patternSelected = false;
+    private boolean patternShootEnabled = false;
+    private boolean lastG2Share = false;
+    private double lastSeenTx = 0;
+
+    private double intakePauseUntil = 0;
+    private boolean intakeActive = true;
+
+    private boolean turretWraparoundActive = false;
+    private int turretWraparoundTarget = 0;
+    private double turretWraparoundIntegral = 0;
+    private double turretWraparoundLastError = 0;
+    private double turretWraparoundStartTime = 0;
+    private double turretWraparoundCooldownUntil = 0;
+    @Override
+    public void runOpMode() {
+        motor = hardwareMap.get(DcMotorEx.class, "shooter");
+        motor.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
+        motor.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        motor.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
+        turntable = hardwareMap.get(DcMotorEx.class, "turntable");
+        turntable.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
+        turntable.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        turntable.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        spindexer = hardwareMap.get(DcMotorEx.class, "spindexer");
+        spindexer.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
+        spindexer.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        spindexer.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        intake = hardwareMap.get(DcMotorEx.class, "intake");
+        intake.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        intake.setDirection(DcMotorSimple.Direction.FORWARD);
+        intake.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        servo = hardwareMap.get(Servo.class, "servo");
+        servoPosition = ServoFlicker.minPosition;
+        servo.setPosition(servoPosition);
+        colorSensor = hardwareMap.get(com.qualcomm.robotcore.hardware.ColorSensor.class, "colorSensor");
+        colorSensor2 = hardwareMap.get(com.qualcomm.robotcore.hardware.ColorSensor.class, "colorSensor2");
+        frontLeft = hardwareMap.get(DcMotorEx.class, "frontLeft");
+        frontRight = hardwareMap.get(DcMotorEx.class, "frontRight");
+        backLeft = hardwareMap.get(DcMotorEx.class, "backLeft");
+        backRight = hardwareMap.get(DcMotorEx.class, "backRight");
+        frontLeft.setDirection(DcMotorEx.Direction.REVERSE);
+        backLeft.setDirection(DcMotorEx.Direction.REVERSE);
+        frontRight.setDirection(DcMotorEx.Direction.FORWARD);
+        backRight.setDirection(DcMotorEx.Direction.FORWARD);
+        frontLeft.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        frontRight.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        backLeft.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        backRight.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        limelight = hardwareMap.get(Limelight3A.class, "limelight");
+        limelight.pipelineSwitch(9);
+        limelight.start();
+        panelsTelemetery.update();
+        for (int i = 0; i < 3; i++) {
+            ballSlots[i] = null;
+        }
+
+        waitForStart();
+        timer.reset();
+        lastTime = timer.seconds();
+        while (opModeIsActive()) {
+            double currentTime = timer.seconds();
+            double dt = currentTime - lastTime;
+            lastTime = currentTime;
+            dt = Math.max(dt, 1e-3);
+            int spindexerCurrentPos = spindexer.getCurrentPosition();
+            double y = -gamepad1.left_stick_y + (-gamepad2.left_stick_y);
+            double x = gamepad1.left_stick_x + gamepad2.left_stick_x;
+            double rx = (gamepad1.right_stick_x + gamepad2.right_stick_x) * Drive.turnSpeed;
+            double denominator = Math.max(Math.abs(y) + Math.abs(x) + Math.abs(rx), 1);
+            double frontLeftPower = (y + x + rx) / denominator * Drive.maxSpeed;
+            double backLeftPower = (y - x + rx) / denominator * Drive.maxSpeed;
+            double frontRightPower = (y - x - rx) / denominator * Drive.maxSpeed;
+            double backRightPower = (y + x - rx) / denominator * Drive.maxSpeed;
+            frontLeft.setPower(frontLeftPower);
+            backLeft.setPower(backLeftPower);
+            frontRight.setPower(frontRightPower);
+            backRight.setPower(backRightPower);
+
+            handleFlywheel(dt);
+            handleTurret(dt);
+            handleServo(dt);
+            handleManualSpindexer();
+            handleGamepad2(dt);
+            handleShootingControls();
+            handleTransfer();
+            if (!spindexerManualActive && !g2SpindexerManualActive) {
+                handleSpindexer(dt);
+            }
+
+            // Color detection — only when spindexer is settled
+            String detectedColor = "none";
+            spindexerCurrentPos = spindexer.getCurrentPosition();
+            double spindexerPosError = computeSpindexerTarget() - spindexerCurrentPos;
+            boolean spindexerSettled = Math.abs(spindexerPosError) <= Spindexer.positionTolerance;
+            if (spindexerSettled) {
+                detectedColor = detectColor();
+            }
+            boolean currentColorDetected = !detectedColor.equals("none");
+            double currentTimeMs = timer.milliseconds();
+
+            if (currentTimeMs > intakePauseUntil) {
+                intakeActive = true;
+            }
+
+            boolean ballAdded = false;
+            if (intakeToggled && !shootingMode && !transferActive && !manualSpinUsed && intakeActive) {
+                if (currentColorDetected && !ballDetectedLastLoop && detectedBalls < 3) {
+                    addBall(detectedColor);
+                    detectedBalls++;
+                    spindexerStepCount++;
+                    ballAdded = true;
+                    if (detectedBalls == 3) {
+                        if (Transfer.autoEnterShootingAt3) {
+                            shootingMode = true;
+                            spindexerInShootingMode = true;
+                            rotateForShooting();
+                            gamepad1.rumble(1.0, 1.0, 500);
+                        } else {
+                            gamepad1.rumble(0.5, 0.5, 200);
+                        }
+                    }
+                }
+            }
+
+            if (ballAdded) {
+                intakePauseUntil = currentTimeMs + Intake.outtakePulseMs;
+                intakeActive = false;
+            }
+            if (spindexerSettled && manualSpinUsed) {
+                manualSpinUsed = false;
+                ballDetectedLastLoop = false;
+            }
+            ballDetectedLastLoop = currentColorDetected;
+            boolean currentG1Cross = gamepad1.cross;
+            if (currentG1Cross && !lastG1Cross) {
+                intakeToggled = !intakeToggled;
+            }
+            lastG1Cross = currentG1Cross;
+            boolean currentDpadRight = gamepad1.dpad_right;
+            boolean outtakeActive = currentDpadRight || gamepad2.circle;
+            if (outtakeActive) {
+                intake.setPower(Intake.outtakePower);
+            } else if (!intakeActive) {
+                // Outtake pulse after ball detected
+                intake.setPower(-Intake.outtakePulsePower);
+            } else if (intakeToggled && !shootingMode) {
+                intake.setPower(Intake.intakePower);
+            } else {
+                intake.setPower(0);
+            }
+            LLResult result = limelight.getLatestResult();
+            boolean limelightValid = (result != null && result.isValid());
+
+            updateTelemetry(result, limelightValid);
+        }
+        motor.setPower(0);
+        turntable.setPower(0);
+        spindexer.setPower(0);
+        intake.setPower(0);
+        servo.setPosition(ServoFlicker.minPosition);
+        frontLeft.setPower(0);
+        frontRight.setPower(0);
+        backLeft.setPower(0);
+        backRight.setPower(0);
+        limelight.stop();
+    }
+    private void addBall(String color) {
+        for (int i = 0; i < 2; i++) {
+            ballSlots[i] = ballSlots[i + 1];
+        }
+        ballSlots[2] = color;
+    }
+    private void rotateForShooting() {
+        // Step 1: Physical rotation to shooting position
+        if (detectedBalls == 3) {
+            // [ball1, ball2, ball3] → [ball3, ball1, ball2]
+            String temp = ballSlots[2];
+            ballSlots[2] = ballSlots[1];
+            ballSlots[1] = ballSlots[0];
+            ballSlots[0] = temp;
+        } else if (detectedBalls == 2) {
+            ballSlots[0] = ballSlots[2];
+            ballSlots[2] = null;
+        } else if (detectedBalls == 1) {
+            ballSlots[0] = ballSlots[2];
+            ballSlots[2] = null;
+        }
+
+        // Step 2: Pattern matching (only with 3 balls and pattern shoot enabled)
+        if (patternShootEnabled && detectedBalls == 3) {
+            // Check if we have exactly 2 purple and 1 green
+            int purpleCount = 0;
+            int greenCount = 0;
+            for (int i = 0; i < 3; i++) {
+                if ("purple".equals(ballSlots[i])) purpleCount++;
+                if ("green".equals(ballSlots[i])) greenCount++;
+            }
+
+            if (purpleCount == 2 && greenCount == 1) {
+                // Try rotating up to 3 times to match pattern
+                boolean matched = false;
+                for (int cycle = 0; cycle < 3; cycle++) {
+                    // Check if current order matches pattern
+                    if (ballSlots[0].equals(currentPattern[0]) &&
+                            ballSlots[1].equals(currentPattern[1]) &&
+                            ballSlots[2].equals(currentPattern[2])) {
+                        matched = true;
+                        break;
+                    }
+                    // Rotate left by 1: [a, b, c] → [b, c, a]
+                    String temp = ballSlots[0];
+                    ballSlots[0] = ballSlots[1];
+                    ballSlots[1] = ballSlots[2];
+                    ballSlots[2] = temp;
+                    spindexerStepCount++;
+                }
+                if (matched) {
+                    gamepad2.rumble(0.5, 0.5, 200);
+                } else {
+                    // Should not happen with 2p+1g, but safety
+                    gamepad1.rumble(0.8, 0.8, 400);
+                    gamepad2.rumble(0.8, 0.8, 400);
+                }
+            } else {
+                // Wrong ball composition — rumble warning, shoot without pattern
+                gamepad1.rumble(0.8, 0.8, 400);
+                gamepad2.rumble(0.8, 0.8, 400);
+            }
+        }
+    }
+    private void clearBalls() {
+        for (int i = 0; i < ballSlots.length; i++) {
+            ballSlots[i] = null;
+        }
+        detectedBalls = 0;
+        ballDetectedLastLoop = false;
+    }
+    private String formatBallSlots() {
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < ballSlots.length; i++) {
+            if (ballSlots[i] == null) {
+                sb.append("empty");
+            } else if (ballSlots[i].equals("unknown")) {
+                sb.append("???");
+            } else {
+                sb.append(ballSlots[i]);
+            }
+            if (i < ballSlots.length - 1) {
+                sb.append(", ");
+            }
+        }
+        sb.append("]");
+        return sb.toString();
+    }
+    private String formatShootingOrder() {
+        if (detectedBalls == 0) {
+            return "No balls to shoot";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("Order: ");
+        for (int i = 0; i < detectedBalls; i++) {
+            if (ballSlots[i] != null) {
+                if (ballSlots[i].equals("unknown")) {
+                    sb.append("???");
+                } else {
+                    sb.append(ballSlots[i]);
+                }
+            } else {
+                sb.append("?");
+            }
+            if (i < detectedBalls - 1) {
+                sb.append(" → ");
+            }
+        }
+        return sb.toString();
+    }
+    private String detectColor() {
+        int red1 = colorSensor.red();
+        int green1 = colorSensor.green();
+        int blue1 = colorSensor.blue();
+
+        int red2 = colorSensor2.red();
+        int green2 = colorSensor2.green();
+        int blue2 = colorSensor2.blue();
+
+        boolean purple1 = red1 >= PurpleSensor1.redMin && green1 >= PurpleSensor1.greenMin && blue1 >= PurpleSensor1.blueMin;
+        boolean green1Detected = red1 >= GreenSensor1.redMin && green1 >= GreenSensor1.greenMin && blue1 >= GreenSensor1.blueMin;
+
+        boolean purple2 = red2 >= PurpleSensor2.redMin && green2 >= PurpleSensor2.greenMin && blue2 >= PurpleSensor2.blueMin;
+        boolean green2Detected = red2 >= GreenSensor2.redMin && green2 >= GreenSensor2.greenMin && blue2 >= GreenSensor2.blueMin;
+
+        if (purple1 || purple2) return "purple";
+        if (green1Detected || green2Detected) return "green";
+        return "none";
+    }
+
+    private int computeSpindexerTarget() {
+        int base = spindexerBaseOffset + (int) Math.round(spindexerStepCount * Spindexer.stepTicks);
+        if (spindexerInShootingMode) {
+            base += (int) Math.round(Spindexer.shootingModeOffset);
+        }
+        return base;
+    }
+
+    private double computeFlywheelVelocityFromTx(double txValue) {
+        // Placeholder equation: a*tx^2 + b*tx + c
+        double raw = FlywheelEquation.a * txValue * txValue
+                + FlywheelEquation.b * txValue
+                + FlywheelEquation.c;
+        raw = Math.max(FlywheelEquation.minVelocity, Math.min(FlywheelEquation.maxVelocity, raw));
+        // Round to nearest multiple
+        double step = FlywheelEquation.roundTo;
+        return Math.round(raw / step) * step;
+    }
+
+    private void handleTransfer() {
+        if (!transferActive) return;
+
+        int spindexerCurrentPos = spindexer.getCurrentPosition();
+        double elapsed = timer.milliseconds() - transferStageStartTime;
+
+        if (Transfer.enableTransferTimeout &&
+                elapsed > Transfer.transferStageTimeoutMs) {
+            transferActive = false;
+            shootingMode = false;
+            spindexerInShootingMode = false;
+            servoPosition = ServoFlicker.minPosition;
+            servo.setPosition(ServoFlicker.minPosition);
+            clearBalls();
+            gamepad1.rumble(1.0, 1.0, 300);
+            telemetry.addData("ERROR", "Transfer timeout!");
+            return;
+        }
+
+        switch (transferStage) {
+            case 0: // Flick UP — command servo and wait
+                servo.setPosition(ServoFlicker.maxPosition);
+                if (elapsed >= ServoFlicker.flickUpWaitMs) {
+                    transferStage = 1;
+                    transferStageStartTime = timer.milliseconds();
+                }
+                break;
+
+            case 1: // Flick DOWN — command servo and wait
+                servo.setPosition(ServoFlicker.minPosition);
+                if (elapsed >= ServoFlicker.flickDownWaitMs) {
+                    flickCount++;
+
+                    for (int i = 0; i < 2; i++) {
+                        ballSlots[i] = ballSlots[i + 1];
+                    }
+                    ballSlots[2] = null;
+                    detectedBalls--;
+
+                    if (flickCount >= originalDetectedBalls) {
+                        // Done shooting all balls
+                        transferActive = false;
+                        shootingMode = false;
+                        spindexerInShootingMode = false;
+                        servoPosition = ServoFlicker.minPosition;
+                        clearBalls();
+
+                        if (Intake.autoPauseAfterShoot) {
+                            intakeToggled = false;
+                            gamepad1.rumble(0.3, 0.3, 200);
+                        }
+                    } else {
+                        // More balls to shoot — advance spindexer
+                        transferStage = 2;
+                        transferStageStartTime = timer.milliseconds();
+                    }
+                }
+                break;
+
+            case 2: // Advance spindexer one step
+                spindexerStepCount++;
+                transferStage = 3;
+                transferStageStartTime = timer.milliseconds();
+                break;
+
+            case 3: // Wait for spindexer to reach position
+                double activeSpindexerError = computeSpindexerTarget() - spindexerCurrentPos;
+                telemetry.addData("Spindexer Transfer Error", (int) activeSpindexerError);
+                boolean advanceReached = Math.abs(activeSpindexerError) <= Spindexer.positionTolerance;
+
+                if (advanceReached) {
+                    transferStage = 4;
+                    transferStageStartTime = timer.milliseconds();
+                }
+                break;
+
+            case 4: // Post-spin wait before next flick
+                if (elapsed >= ServoFlicker.postSpinWaitMs) {
+                    transferStage = 0;
+                    transferStageStartTime = timer.milliseconds();
+                }
+                break;
+        }
+    }
+
+    private void handleFlywheel(double dt) {
+        double velocity = motor.getVelocity();
+        double error = Flywheel.targetVelocity - velocity;
+
+        integralSum += error * dt;
+        integralSum = Math.max(-Flywheel.integralMax, Math.min(Flywheel.integralMax, integralSum));
+
+        double derivative = (error - lastError) / dt;
+        double feedForward = Flywheel.kF * Flywheel.targetVelocity;
+
+        double output = (Flywheel.kP * error) + (Flywheel.kI * integralSum) + (Flywheel.kD * derivative) + feedForward;
+
+        output = Math.max(-1.0, Math.min(1.0, output));
+        motor.setPower(output);
+        lastError = error;
+
+        if (Flywheel.targetVelocity == 0) {
+            integralSum = 0;
+            lastError = 0;
+            motor.setPower(0);
+            shooterRumbled = false;
+        }
+
+        if (Flywheel.targetVelocity > 0 && Math.abs(error) <= 50 && !shooterRumbled) {
+            gamepad1.rumble(1.0, 1.0, 1000);
+            shooterRumbled = true;
+        }
+    }
+
+    private void handleTurret(double dt) {
+        // Wraparound logic
+        if (Turntable.enableWraparound) {
+            int currentTurretPos = turntable.getCurrentPosition();
+
+            if (!turretWraparoundActive && timer.seconds() > turretWraparoundCooldownUntil) {
+                if (currentTurretPos > Turntable.maxTicks) {
+                    turretWraparoundActive = true;
+                    turretWraparoundTarget = Turntable.minTicks;
+                    turretWraparoundIntegral = 0;
+                    turretWraparoundLastError = 0;
+                    turretWraparoundStartTime = timer.seconds();
+                    gamepad1.rumble(0.3, 0.3, 150);
+                } else if (currentTurretPos < Turntable.minTicks) {
+                    turretWraparoundActive = true;
+                    turretWraparoundTarget = Turntable.maxTicks;
+                    turretWraparoundIntegral = 0;
+                    turretWraparoundLastError = 0;
+                    turretWraparoundStartTime = timer.seconds();
+                    gamepad1.rumble(0.3, 0.3, 150);
+                }
+            }
+
+            if (turretWraparoundActive) {
+                double wraparoundElapsed = timer.seconds() - turretWraparoundStartTime;
+
+                boolean emergencyCancel = (gamepad1.left_bumper && gamepad1.right_bumper) ||
+                        (gamepad2.left_bumper && gamepad2.right_bumper);
+
+                if (emergencyCancel || wraparoundElapsed > Turntable.wraparoundTimeoutSec) {
+                    turretWraparoundActive = false;
+                    turretWraparoundIntegral = 0;
+                    turretWraparoundLastError = 0;
+                    turntable.setPower(0);
+                    gamepad1.rumble(1.0, 1.0, 300);
+                    gamepad2.rumble(1.0, 1.0, 300);
+                    if (wraparoundElapsed > Turntable.wraparoundTimeoutSec) {
+                        Turntable.enableWraparound = false;
+                        telemetry.addData("WRAPAROUND", "TIMEOUT - MANUAL MODE");
+                    }
+                } else {
+                    double wraparoundError = turretWraparoundTarget - currentTurretPos;
+
+                    if (Math.abs(wraparoundError) <= Turntable.wraparoundTolerance) {
+                        turretWraparoundActive = false;
+                        turretWraparoundIntegral = 0;
+                        turretWraparoundLastError = 0;
+                        turretWraparoundCooldownUntil = timer.seconds() + 1.0;
+                        turntable.setPower(0);
+                        gamepad1.rumble(0.5, 0.5, 200);
+                    } else {
+                        turretWraparoundIntegral += wraparoundError * dt;
+                        turretWraparoundIntegral = Math.max(-Turntable.wraparoundIntegralMax,
+                                Math.min(Turntable.wraparoundIntegralMax,
+                                        turretWraparoundIntegral));
+
+                        double wraparoundDerivative = 0;
+                        if (dt >= 1e-3) {
+                            wraparoundDerivative = (wraparoundError - turretWraparoundLastError) / dt;
+                        }
+
+                        double wraparoundOutput = (Turntable.wraparoundKP * wraparoundError)
+                                + (Turntable.wraparoundKI * turretWraparoundIntegral)
+                                + (Turntable.wraparoundKD * wraparoundDerivative);
+
+                        wraparoundOutput = Math.max(-Turntable.wraparoundMaxPower,
+                                Math.min(Turntable.wraparoundMaxPower, wraparoundOutput));
+
+                        turntable.setPower(wraparoundOutput);
+                        turretWraparoundLastError = wraparoundError;
+                    }
+                }
+            }
+        }
+
+        // Normal turret control (only when not wrapping around)
+        if (!turretWraparoundActive) {
+            if (Tracking.enableTracking) {
+                LLResult result = limelight.getLatestResult();
+
+                if (result != null && result.isValid()) {
+                    double tx = result.getTy();
+
+                    if (tx < Tracking.minTx || tx > Tracking.maxTx) {
+                        double trackingError = tx;
+
+                        if (trackingLastError != 0 && Math.signum(trackingError) != Math.signum(trackingLastError)) {
+                            trackingIntegralSum = 0;
+                        }
+                        trackingIntegralSum += trackingError * dt;
+                        trackingIntegralSum = Math.max(-Tracking.integralMax, Math.min(Tracking.integralMax, trackingIntegralSum));
+                        double trackingDerivative = (trackingError - trackingLastError) / dt;
+                        double trackingOutput = (Tracking.kP * trackingError) + (Tracking.kI * trackingIntegralSum) + (Tracking.kD * trackingDerivative);
+                        trackingOutput = Math.max(-Tracking.turretPower, Math.min(Tracking.turretPower, trackingOutput));
+
+                        turntable.setPower(Tracking.trackingSign * trackingOutput);
+                        trackingLastError = trackingError;
+                    } else {
+                        turntable.setPower(0);
+                        trackingIntegralSum = 0;
+                        trackingLastError = 0;
+                    }
+                } else {
+                    turntable.setPower(0);
+                    trackingIntegralSum = 0;
+                    trackingLastError = 0;
+                }
+            } else {
+                if (gamepad1.right_bumper || gamepad2.right_bumper) {
+                    turntable.setPower(-Turntable.manualPower);
+                } else if (gamepad1.left_bumper || gamepad2.left_bumper) {
+                    turntable.setPower(Turntable.manualPower);
+                } else {
+                    turntable.setPower(0);
+                }
+
+                trackingIntegralSum = 0;
+                trackingLastError = 0;
+            }
+        } else {
+            trackingIntegralSum = 0;
+            trackingLastError = 0;
+        }
+    }
+
+    private void handleServo(double dt) {
+        servoPosition = Math.max(ServoFlicker.minPosition, Math.min(ServoFlicker.maxPosition, servoPosition));
+
+        if (!transferActive) {
+            servo.setPosition(servoPosition);
+        }
+    }
+
+    private void handleManualSpindexer() {
+        boolean triggersActive = gamepad1.right_trigger > 0.1 || gamepad1.left_trigger > 0.1;
+
+        if (triggersActive && !transferActive) {
+            spindexerManualActive = true;
+            double power = 0;
+            if (gamepad1.right_trigger > 0.1) {
+                power = gamepad1.right_trigger * ManualSpindexer.power;
+            }
+            if (gamepad1.left_trigger > 0.1) {
+                power = -gamepad1.left_trigger * ManualSpindexer.power;
+            }
+            spindexer.setPower(power);
+        } else if (spindexerManualActive) {
+            // Triggers just released — zero-reset at current position
+            spindexer.setPower(0);
+            spindexerManualActive = false;
+            spindexerBaseOffset = spindexer.getCurrentPosition();
+            spindexerStepCount = 0;
+            spindexerInShootingMode = false;
+            spindexerIntegralSum = 0;
+            spindexerLastError = 0;
+            gamepad1.rumble(0.3, 0.3, 150);
+        }
+    }
+
+    private void handleShootingControls() {
+        // Triangle (g1) — enter shooting mode
+        boolean currentTriangle = gamepad1.triangle;
+        if (currentTriangle && !lastg1Triangle && !shootingMode && !transferActive) {
+            shootingMode = true;
+            spindexerInShootingMode = true;
+            rotateForShooting();
+        }
+        lastg1Triangle = currentTriangle;
+
+        // Circle (g1) — start shooting transfer
+        boolean currentCircle = gamepad1.circle;
+        if (currentCircle && !lastG1Circle && shootingMode && !transferActive) {
+            if (Transfer.preventZeroBallTransfer && detectedBalls == 0) {
+                gamepad1.rumble(0.5, 0.5, 200);
+            } else {
+                transferActive = true;
+                transferStage = 0;
+                flickCount = 0;
+                originalDetectedBalls = detectedBalls;
+                transferStageStartTime = timer.milliseconds();
+            }
+        }
+        lastG1Circle = currentCircle;
+
+        // Square (g1) — manual add unknown ball + advance
+        boolean currentSquareState = gamepad1.square;
+        if (currentSquareState && !lastSquareState && !shootingMode && !transferActive) {
+            if (detectedBalls < 3) {
+                addBall("unknown");
+                detectedBalls++;
+                spindexerStepCount++;
+                if (detectedBalls == 3) {
+                    gamepad1.rumble(0.5, 0.5, 200);
+                }
+            } else {
+                spindexerStepCount++;
+            }
+            manualSpinUsed = true;
+        }
+        lastSquareState = currentSquareState;
+
+        // Dpad left (g1) — manual reverse spin
+        boolean g1left = gamepad1.dpad_left;
+        if (g1left && !lastDpadLeft && !transferActive) {
+            spindexerStepCount--;
+            manualSpinUsed = true;
+        }
+        lastDpadLeft = g1left;
+    }
+
+    private void handleGamepad2(double dt) {
+        // --- Dpad Down: Toggle pattern shoot (only if a motif was selected) ---
+        boolean g2DpadDown = gamepad2.dpad_down;
+        if (g2DpadDown && !lastG2DpadDown) {
+            if (!patternSelected) {
+                // No motif selected — reject
+                gamepad2.rumble(1.0, 0.0, 300);
+            } else {
+                patternShootEnabled = !patternShootEnabled;
+                if (patternShootEnabled) {
+                    // ON: 1 rumble
+                    gamepad2.rumbleBlips(1);
+                } else {
+                    // OFF: 2 rumbles
+                    gamepad2.rumbleBlips(2);
+                }
+            }
+        }
+        lastG2DpadDown = g2DpadDown;
+
+        // --- Dpad Left: Motif 21 (green, purple, purple) ---
+        boolean g2DpadLeft = gamepad2.dpad_left;
+        if (g2DpadLeft && !lastG2DpadLeft) {
+            currentPattern = new String[]{"green", "purple", "purple"};
+            patternSelected = true;
+            gamepad2.rumble(0.3, 0.3, 150);
+        }
+        lastG2DpadLeft = g2DpadLeft;
+
+        // --- Dpad Up: Motif 22 (purple, green, purple) ---
+        boolean g2DpadUp = gamepad2.dpad_up;
+        if (g2DpadUp && !lastG2DpadUp) {
+            currentPattern = new String[]{"purple", "green", "purple"};
+            patternSelected = true;
+            gamepad2.rumble(0.3, 0.3, 150);
+        }
+        lastG2DpadUp = g2DpadUp;
+
+        // --- Dpad Right: Motif 23 (purple, purple, green) ---
+        boolean g2DpadRight = gamepad2.dpad_right;
+        if (g2DpadRight && !lastG2DpadRight) {
+            currentPattern = new String[]{"purple", "purple", "green"};
+            patternSelected = true;
+            gamepad2.rumble(0.3, 0.3, 150);
+        }
+        lastG2DpadRight = g2DpadRight;
+
+        // --- Triangle: Toggle turret tracking ---
+        boolean g2Triangle = gamepad2.triangle;
+        if (g2Triangle && !lastG2Triangle) {
+            Tracking.enableTracking = !Tracking.enableTracking;
+            if (Tracking.enableTracking) {
+                gamepad2.rumbleBlips(1);
+            } else {
+                gamepad2.rumbleBlips(2);
+            }
+        }
+        lastG2Triangle = g2Triangle;
+
+        // --- Cross (X): Toggle flywheel equation ---
+        boolean g2Cross = gamepad2.cross;
+        if (g2Cross && !lastG2Cross) {
+            flywheelEquationEnabled = !flywheelEquationEnabled;
+            if (flywheelEquationEnabled) {
+                shooterRumbled = false;
+                gamepad2.rumbleBlips(1);
+            } else {
+                Flywheel.targetVelocity = 0;
+                shooterRumbled = false;
+                gamepad2.rumbleBlips(2);
+            }
+        }
+        lastG2Cross = g2Cross;
+
+        // --- Circle: Outtake (momentary, handled in intake logic) ---
+
+        // --- Share: Close range (only when equation OFF) ---
+        boolean g2Share = gamepad2.share;
+        if (g2Share && !lastG2Share && !flywheelEquationEnabled) {
+            Flywheel.targetVelocity = Velocities.closeRange;
+            shooterRumbled = false;
+            gamepad2.rumble(0.3, 0.3, 150);
+        }
+        lastG2Share = g2Share;
+
+        // --- Options: Long range (only when equation OFF) ---
+        boolean g2Options = gamepad2.options;
+        if (g2Options && !lastG2Options && !flywheelEquationEnabled) {
+            Flywheel.targetVelocity = Velocities.longRange;
+            shooterRumbled = false;
+            gamepad2.rumble(0.3, 0.3, 150);
+        }
+        lastG2Options = g2Options;
+
+        // --- Triggers: Manual spindexer (direct power) ---
+        if (!transferActive) {
+            if (gamepad2.right_trigger > 0.1) {
+                g2SpindexerManualActive = true;
+                spindexer.setPower(gamepad2.right_trigger * ManualSpindexer.power);
+            } else if (gamepad2.left_trigger > 0.1) {
+                g2SpindexerManualActive = true;
+                spindexer.setPower(-gamepad2.left_trigger * ManualSpindexer.power);
+            } else if (g2SpindexerManualActive) {
+                spindexer.setPower(0);
+                g2SpindexerManualActive = false;
+            }
+        }
+
+        // --- Flywheel equation: compute target from tx, use last seen if no target ---
+        if (flywheelEquationEnabled) {
+            LLResult result = limelight.getLatestResult();
+            if (result != null && result.isValid()) {
+                lastSeenTx = result.getTx();
+            }
+            Flywheel.targetVelocity = computeFlywheelVelocityFromTx(lastSeenTx);
+        }
+    }
+
+    private void handleSpindexer(double dt) {
+        int spindexerCurrentPos = spindexer.getCurrentPosition();
+        int target = computeSpindexerTarget();
+        double spindexerPosError = target - spindexerCurrentPos;
+
+        boolean isMoving = Math.abs(spindexerPosError) > Spindexer.positionTolerance;
+        if (isMoving) {
+            spindexerIntegralSum += spindexerPosError * dt;
+            spindexerIntegralSum = Math.max(-Spindexer.integralMax, Math.min(Spindexer.integralMax, spindexerIntegralSum));
+            double spindexerDerivative = (spindexerPosError - spindexerLastError) / dt;
+            double spindexerOutput = (Spindexer.kP * spindexerPosError) + (Spindexer.kI * spindexerIntegralSum) + (Spindexer.kD * spindexerDerivative);
+            spindexerOutput = Math.max(-Spindexer.maxPower, Math.min(Spindexer.maxPower, spindexerOutput));
+            spindexer.setPower(spindexerOutput);
+            spindexerLastError = spindexerPosError;
+        } else {
+            spindexer.setPower(0);
+            spindexerIntegralSum = 0;
+            spindexerLastError = 0;
+        }
+    }
+
+    private void updateTelemetry(LLResult result, boolean limelightValid) {
+        telemetry.addData("Shooting Mode", shootingMode ? "READY (" + flickCount + "/" + originalDetectedBalls + ")" : "COLLECT");
+        if (shootingMode) {
+            telemetry.addData("Flick Order", formatShootingOrder());
+        } else {
+            telemetry.addData("Intake Order", formatBallSlots());
+        }
+        telemetry.addData("Pattern", patternShootEnabled ?
+                "ON: " + String.join(", ", currentPattern) :
+                (patternSelected ? "OFF: " + String.join(", ", currentPattern) : "NONE SELECTED"));
+        telemetry.addData("Tracking", Tracking.enableTracking ? "ON" : "OFF");
+        telemetry.addData("Flywheel Eq", flywheelEquationEnabled ? "ON" : "OFF");
+        if (turretWraparoundActive) {
+            telemetry.addData("Turret", "WRAPPING → " + turretWraparoundTarget);
+        } else {
+            telemetry.addData("Turret", turntable.getCurrentPosition() + " ticks");
+        }
+        telemetry.addData("Balls", detectedBalls + "/3");
+        telemetry.addData("Limelight", limelightValid ? "LOCKED" : "NO TARGET");
+        telemetry.addData("Flywheel", (int) motor.getVelocity() + " / " + (int) Flywheel.targetVelocity);
+        int spindexerCurrentPos = spindexer.getCurrentPosition();
+        int spindexerTarget = computeSpindexerTarget();
+        double spindexerPosError = spindexerTarget - spindexerCurrentPos;
+        telemetry.addData("Spindexer", spindexerCurrentPos + " → " + spindexerTarget + " (err: " + (int) spindexerPosError + ")");
+        telemetry.addData("Intake", intakeActive ? (intakeToggled ? "ON" : "OFF") : "OUTTAKE PULSE");
+        telemetry.update();
+
+        panelsTelemetery.addData("Turret Ticks", turntable.getCurrentPosition());
+        panelsTelemetery.addData("Turret Power", turntable.getPower());
+        if (turretWraparoundActive) {
+            panelsTelemetery.addData("Wraparound", "ACTIVE > " + turretWraparoundTarget);
+            double wraparoundError = turretWraparoundTarget - turntable.getCurrentPosition();
+            panelsTelemetery.addData("Wrap Error", wraparoundError);
+        } else {
+            panelsTelemetery.addData("Wraparound", "Ready");
+        }
+        panelsTelemetery.addData("", "");
+
+        panelsTelemetery.addData("Pattern Shoot", patternShootEnabled ? "ON" : "OFF");
+        panelsTelemetery.addData("Current Pattern", patternSelected ? String.join(", ", currentPattern) : "NONE");
+        panelsTelemetery.addData("Flywheel Equation", flywheelEquationEnabled ? "ON (last tx: " + String.format("%.1f", lastSeenTx) + ")" : "OFF");
+
+        if (shootingMode) {
+            panelsTelemetery.addData("Flick Order", formatBallSlots());
+            panelsTelemetery.addData("Flicking", flickCount + "/" + originalDetectedBalls);
+            panelsTelemetery.addData("Next Ball", formatShootingOrder());
+            if (transferActive) {
+                panelsTelemetery.addData("Transfer Stage", transferStage);
+                double stageTime = timer.milliseconds() - transferStageStartTime;
+                panelsTelemetery.addData("Stage Time", stageTime);
+            }
+        } else {
+            panelsTelemetery.addData("Intake Order", formatBallSlots());
+            panelsTelemetery.addData("Detected Balls", detectedBalls + "/3");
+        }
+        panelsTelemetery.addData("", "");
+
+        String detectedColor = detectColor();
+        panelsTelemetery.addData("Detected Color", detectedColor);
+        panelsTelemetery.addData("RGB Sensor1", colorSensor.red() + ", " + colorSensor.green() + ", " + colorSensor.blue());
+        panelsTelemetery.addData("RGB Sensor2", colorSensor2.red() + ", " + colorSensor2.green() + ", " + colorSensor2.blue());
+
+        if (Intake.enableColorDebug) {
+            int nonNullCount = 0;
+            for (String slot : ballSlots) {
+                if (slot != null) nonNullCount++;
+            }
+            panelsTelemetery.addData("Slot Count", nonNullCount + " vs Detected: " + detectedBalls);
+        }
+        panelsTelemetery.addData("", "");
+
+        panelsTelemetery.addData("PurpleSensor1 Min", PurpleSensor1.redMin + ", " + PurpleSensor1.greenMin + ", " + PurpleSensor1.blueMin);
+        panelsTelemetery.addData("GreenSensor1 Min", GreenSensor1.redMin + ", " + GreenSensor1.greenMin + ", " + GreenSensor1.blueMin);
+        panelsTelemetery.addData("", "");
+
+        panelsTelemetery.addData("PurpleSensor2 Min", PurpleSensor2.redMin + ", " + PurpleSensor2.greenMin + ", " + PurpleSensor2.blueMin);
+        panelsTelemetery.addData("GreenSensor2 Min", GreenSensor2.redMin + ", " + GreenSensor2.greenMin + ", " + GreenSensor2.blueMin);
+        panelsTelemetery.addData("", "");
+
+        panelsTelemetery.addData("Intake Power", intake.getPower());
+        panelsTelemetery.addData("Spindexer Power", spindexer.getPower());
+
+        double tx = limelightValid ? result.getTx() : 0.0;
+        double ty = limelightValid ? result.getTy() : 0.0;
+        double ta = limelightValid ? result.getTa() : 0.0;
+
+        panelsTelemetery.addData("Limelight Valid", limelightValid ? "YES" : "NO");
+        panelsTelemetery.addData("TX", tx);
+        panelsTelemetery.addData("TY (tracking)", ty);
+        panelsTelemetery.addData("TA", ta);
+        double flywheelVelocity = motor.getVelocity();
+        double flywheelError = Flywheel.targetVelocity - flywheelVelocity;
+        panelsTelemetery.addData("Flywheel Target", Flywheel.targetVelocity);
+        panelsTelemetery.addData("Flywheel Velocity", flywheelVelocity);
+        panelsTelemetery.addData("Flywheel Error", flywheelError);
+        panelsTelemetery.addData("Flywheel Power", motor.getPower());
+        panelsTelemetery.addData("", "");
+
+        panelsTelemetery.update();
+    }
+}
