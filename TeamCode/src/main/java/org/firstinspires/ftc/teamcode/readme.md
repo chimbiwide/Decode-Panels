@@ -2,7 +2,7 @@
 
 This is the repository for SJ Shogun team 27598.
 
-With new chnaages these configs will change
+With new changes these configs will change
 
 Sorter -- Port 2 Expansion   
 Turret -- Port 3 Expansion   
