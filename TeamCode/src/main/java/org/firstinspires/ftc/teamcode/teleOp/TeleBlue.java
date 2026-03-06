@@ -25,7 +25,7 @@ public class TeleBlue extends LinearOpMode {
 
     // Button edge detection
     private boolean lastTriangle2 = false;
-    private boolean lastG1Cross = false;
+    private boolea/n lastG1Cross = false;
     private boolean lastG2Cross = false;
     private boolean lastG1Triangle = false;
     private boolean lastG1Circle = false;
