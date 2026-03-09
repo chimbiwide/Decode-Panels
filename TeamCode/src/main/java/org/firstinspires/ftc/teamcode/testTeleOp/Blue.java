@@ -9,17 +9,16 @@ import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorSimple;
-import com.qualcomm.robotcore.hardware.DistanceSensor;
+import com.qualcomm.robotcore.hardware.AnalogInput;
 import com.qualcomm.robotcore.hardware.NormalizedColorSensor;
 import com.qualcomm.robotcore.hardware.NormalizedRGBA;
 import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.hardware.SwitchableLight;
 import com.qualcomm.robotcore.util.ElapsedTime;
 import com.bylazar.telemetry.PanelsTelemetry;
-import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
 
-@TeleOp(name = "Panels")
-public class Panels extends LinearOpMode {
+@TeleOp(name = "blue tele test")
+public class Blue extends LinearOpMode {
 
     TelemetryManager.TelemetryWrapper panelsTelemetry = PanelsTelemetry.INSTANCE.getFtcTelemetry();
 
@@ -28,12 +27,15 @@ public class Panels extends LinearOpMode {
 
     @Configurable
     public static class Flywheel {
-        public static double kP = 0.0037;
-        public static double kI = 0.0;
-        public static double kD = 0.000008;
+        public static double kP = 0.02;
+        public static double kI = 0.005;
+        public static double kD = 0.0;
         public static double kF = 0.00041;
         public static double targetVelocity = 0;
         public static double integralMax = 0.3;
+        // Presets — set via G2 Share (close) and G2 Options (long)
+        public static double closeRangeVelocity = 1250;
+        public static double longRangeVelocity  = 1450;
     }
 
     @Configurable
@@ -43,8 +45,8 @@ public class Panels extends LinearOpMode {
         public static double kD = 0.0008;
         public static double integralMax = 0.3;
         public static double turretPower = 0.5;
-        public static double minTx = -0.5;
-        public static double maxTx = 0.5;
+        // Turret stops moving when |tx| <= txDeadzone (target is "close enough")
+        public static double txDeadzone = 0.5;
         public static boolean enableTracking = false;
     }
 
@@ -66,38 +68,50 @@ public class Panels extends LinearOpMode {
     @Configurable
     public static class TransferMotor {
         // Power used during the 360° shoot spin
-        public static double shootPower = 1.0;
+        public static double shootPower = -1.0;
         // Power used when driver manually controls via triggers
         public static double manualPower = 1.0;
     }
 
     @Configurable
     public static class BallDetection {
-        public static double detectionDistanceMM = 50.0;
+        // SwyftRanger: distance in inches using formula (voltage * 48.7) - 4.9
+        public static double detectionDistanceIn = 3.0;
+        // How long to wait after start before sensors can ever activate (ms)
+        public static double startupDelayMs = 2000;
     }
 
     @Configurable
     public static class ColorDetection {
         // Time to wait for color sensor to confirm a color before defaulting to purple
         public static double colorTimeoutMs = 2000.0;
-
-        // Gain: multiplier on sensor sensitivity. Higher = stronger reads.
-        // Default 1.0 is stock. 8.0 gives strong color separation.
-        public static double gain = 8.0;
-
-        // --- Green thresholds (alpha-normalized) ---
-        // Green detected when: normG > greenMin AND normR < greenRedMax AND normB < greenBlueMax
-        public static double greenMin = 0.35;
-        public static double greenRedMax = 0.33;
-        public static double greenBlueMax = 0.33;
-
-        // --- Purple thresholds (alpha-normalized) ---
-        // Purple detected when: normR > purpleRedMin AND normB > purpleBlueMin AND normG < purpleGreenMax
-        public static double purpleRedMin = 0.30;
-        public static double purpleBlueMin = 0.30;
-        public static double purpleGreenMax = 0.33;
-
         public static boolean enableLEDs = true;
+    }
+
+    @Configurable
+    public static class ColorSensor1 {
+        public static double gain = 8.0;
+        // Green ranges (alpha-normalized)
+        public static double greenGMin = 0.35;  public static double greenGMax = 1.0;
+        public static double greenRMin = 0.0;   public static double greenRMax = 0.33;
+        public static double greenBMin = 0.0;   public static double greenBMax = 0.33;
+        // Purple ranges (alpha-normalized)
+        public static double purpleRMin = 0.30; public static double purpleRMax = 1.0;
+        public static double purpleBMin = 0.30; public static double purpleBMax = 1.0;
+        public static double purpleGMin = 0.0;  public static double purpleGMax = 0.33;
+    }
+
+    @Configurable
+    public static class ColorSensor2 {
+        public static double gain = 8.0;
+        // Green ranges (alpha-normalized)
+        public static double greenGMin = 0.35;  public static double greenGMax = 1.0;
+        public static double greenRMin = 0.0;   public static double greenRMax = 0.33;
+        public static double greenBMin = 0.0;   public static double greenBMax = 0.33;
+        // Purple ranges (alpha-normalized)
+        public static double purpleRMin = 0.30; public static double purpleRMax = 1.0;
+        public static double purpleBMin = 0.30; public static double purpleBMax = 1.0;
+        public static double purpleGMin = 0.0;  public static double purpleGMax = 0.33;
     }
 
     @Configurable
@@ -109,13 +123,13 @@ public class Panels extends LinearOpMode {
         // Servo goes to slot1 when intake activates; advances one slot after each ball is loaded.
         // When the disk is at slotN, that slot is aligned with the intake/shooter opening.
         // Spinning +fullRotation from slotN fires the ball in slotN first, then slotN+1, etc.
-        public static double slot1 = 0.097;   // ball 1 intake position — also the shoot-start
-        public static double slot2 = 0.287;   // ball 2 intake position
-        public static double slot3 = 0.477;   // ball 3 intake position
+        // Full 360° = 0.5653 servo units. Step = 0.5653 / 3 = 0.1884
+        public static double slot1 = 0.097;             // ball 1 — fixed reference
+        public static double slot2 = 0.097 + 0.1884;   // = 0.2854
+        public static double slot3 = 0.097 + 0.3768;   // = 0.4737
 
         // One full 360° revolution of the spindexer in servo position units.
-        // Starting at slotN and adding fullRotation fires all balls through the shooter.
-        public static double fullRotation = 0.382;
+        public static double fullRotation = 0.5653;
 
         // Safety buffer: servo must have at least this much room past (startPos + fullRotation)
         // before the servo upper limit (1.0). If not, startTransfer() falls back to slot1.
@@ -124,14 +138,23 @@ public class Panels extends LinearOpMode {
 
         // How long (ms) the 360° shoot spin runs — transfer motor stays at max during this window.
         // ~3300 ms gives the spindexer enough time to complete the full rotation.
-        public static double transferDurationMs = 3300;
+        public static double transferDurationMs = 1500;
 
         // Delay between manual slot advances (ms)
         public static double moveWaitMs = 300;
 
         // Time (ms) after a servo move before sensors are enabled.
         // Prevents false detections while the spindexer is rotating.
-        public static double settleTimeMs = 300;
+        public static double settleTimeMs = 200;
+
+        // Servo slew speed in servo-units per SECOND (time-based, loop-rate independent).
+        // 1.0 = full range (0→1) in 1 second. One slot step = 0.2353 units.
+        // Example: 0.5 = one slot in ~0.5s, 0.2 = one slot in ~1.2s, 5.0 = near-instant.
+        public static double servoSpeed = 4.0;
+
+        // Separate speed for the 360° transfer/shoot spin (servo-units per second).
+        // Lower = slower spin = more time for each ball to fire through the shooter.
+        public static double transferServoSpeed = 0.7;
     }
 
     @Configurable
@@ -182,7 +205,7 @@ public class Panels extends LinearOpMode {
     private DcMotorEx transferMotor;  // omni wheel / transfer motor
     private Servo spindexerServo1;
     private Servo spindexerServo2;
-    private DistanceSensor distanceSensor;
+    private AnalogInput ranger;
     private NormalizedColorSensor colorSensor1;
     private NormalizedColorSensor colorSensor2;
     private DcMotorEx frontLeft, frontRight, backLeft, backRight;
@@ -209,8 +232,11 @@ public class Panels extends LinearOpMode {
 
     // Spindexer: -1 = initPosition, 0 = slot1, 1 = slot2, 2 = slot3
     private int spindexerStep = -1;
-    private double spindexerMoveTime = 0;  // timestamp of last servo command
-    private boolean sensorsEnabled = false; // sensors gated by spindexer settled
+    private double spindexerTargetPos = 0.5;  // commanded target position
+    private double spindexerCurrentPos = 0.5; // actual slewed position
+    private double spindexerMoveTime = 0;     // timestamp of last servo command
+    private boolean sensorsEnabled = false;   // sensors gated by spindexer settled
+    private final ElapsedTime slewTimer = new ElapsedTime(); // dedicated slew timer
 
     // Transfer (shoot)
     private boolean transferActive = false;
@@ -249,6 +275,13 @@ public class Panels extends LinearOpMode {
     private boolean lastCrossG1 = false;
     private boolean lastCrossG2 = false;
     private boolean lastDpadUpG1 = false;
+    private boolean lastShareG1 = false;
+    private boolean lastOptionsG1 = false;
+    private boolean lastShareG2 = false;
+    private boolean lastOptionsG2 = false;
+
+    // Last detected ball color (from color sensors)
+    private String lastDetectedColor = null;
 
     // Shooting pattern
     private String[] currentPattern = new String[3];
@@ -288,16 +321,15 @@ public class Panels extends LinearOpMode {
         transferMotor.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
 
         // Spindexer — starts at initPosition (0.5)
-        spindexerServo1 = hardwareMap.get(Servo.class, "spindexerServo1");
-        spindexerServo2 = hardwareMap.get(Servo.class, "spindexerServo2");
+        spindexerServo1 = hardwareMap.get(Servo.class, "servo1");
+        spindexerServo2 = hardwareMap.get(Servo.class, "servo2");
         spindexerStep = -1;
         setSpindexerPosition(SpindexerPositions.initPosition);
 
         // Sensors
-        distanceSensor = hardwareMap.get(DistanceSensor.class, "distanceSensor");
+        ranger = hardwareMap.get(AnalogInput.class, "distanceSensor");
         colorSensor1 = hardwareMap.get(NormalizedColorSensor.class, "colorSensor1");
         colorSensor2 = hardwareMap.get(NormalizedColorSensor.class, "colorSensor2");
-        setColorLEDs(false);
 
         // Drive
         frontLeft  = hardwareMap.get(DcMotorEx.class, "frontLeft");
@@ -346,6 +378,7 @@ public class Panels extends LinearOpMode {
             frontRight.setPower((y - x - rx) / denom * Drive.maxSpeed);
             backRight.setPower((y + x - rx) / denom * Drive.maxSpeed);
 
+            updateSpindexerSlew(dt);
             handleFlywheel(dt);
             handleTurret(dt);
             handleTransferMotor();
@@ -353,44 +386,37 @@ public class Panels extends LinearOpMode {
             handleTransfer();
             handleIntakeModeToggle();
 
-            // --- Sensor gating: only enable when spindexer is settled ---
-            if (spindexerSettled() && !sensorsEnabled) {
-                sensorsEnabled = true;
-            }
-
-            // Color sensor LEDs — on only when sensors are active and in SORTING mode
-            setColorLEDs(sensorsEnabled && intakeMode == IntakeMode.SORTING && ColorDetection.enableLEDs);
-
-            // --- Ball detection (only when spindexer is settled) ---
-            boolean ballNow = sensorsEnabled && detectBall();
             double nowMs = timer.milliseconds();
 
+            // --- Sensor gating: startup delay + spindexer physically settled ---
+            if (!sensorsEnabled
+                    && timer.milliseconds() >= BallDetection.startupDelayMs
+                    && spindexerSettled()) {
+                sensorsEnabled = true;
+            }
+            // Color sensor LEDs on when sensors active and in SORTING mode
+            setColorLEDs(sensorsEnabled && intakeMode == IntakeMode.SORTING && ColorDetection.enableLEDs);
+
+            // --- Distance sensor ball detection ---
             if (nowMs > intakePauseUntil) intakeActive = true;
 
+            boolean ballNow = sensorsEnabled && detectBall();
             boolean ballAdded = false;
-            if (sensorsEnabled && intakeToggled && Intake.autoSortEnabled && !shootingMode && !transferActive && !manualSpinUsed && intakeActive) {
-                if (intakeMode == IntakeMode.SORTING) {
-                    // New ball enters → start color timer
-                    if (ballNow && !ballDetectedLastLoop && detectedBalls < 3 && !awaitingColorDetect) {
-                        awaitingColorDetect = true;
-                        colorDetectStartTime = nowMs;
-                    }
-                    // Poll color or time out → default purple
-                    if (awaitingColorDetect && detectedBalls < 3) {
-                        String color = detectBallColor();
-                        boolean timedOut = (nowMs - colorDetectStartTime) > ColorDetection.colorTimeoutMs;
-                        if (color != null || timedOut) {
-                            commitBall((color != null) ? color : "purple");
-                            ballAdded = true;
-                        }
-                    }
-                } else {
-                    // NORMAL mode — no color ID, just count
-                    if (ballNow && !ballDetectedLastLoop && detectedBalls < 3) {
-                        commitBall("unknown");
-                        ballAdded = true;
-                    }
+
+            if (sensorsEnabled && intakeToggled && !shootingMode && !transferActive && !manualSpinUsed && intakeActive) {
+                if (ballNow && !ballDetectedLastLoop && detectedBalls < 3) {
+                    // Try to get color; fall back to "unknown" if sensors not ready
+                    String color = detectBallColor();
+                    lastDetectedColor = (color != null) ? color : "unknown";
+                    commitBall(lastDetectedColor);
+                    ballAdded = true;
                 }
+            }
+
+            // Update color telemetry even when not detecting a ball
+            if (sensorsEnabled && intakeMode == IntakeMode.SORTING) {
+                String c = detectBallColor();
+                if (c != null) lastDetectedColor = c;
             }
 
             if (ballAdded) {
@@ -400,7 +426,6 @@ public class Panels extends LinearOpMode {
             if (manualSpinUsed) {
                 manualSpinUsed = false;
                 ballDetectedLastLoop = false;
-                awaitingColorDetect = false;
             }
             ballDetectedLastLoop = ballNow;
 
@@ -416,7 +441,7 @@ public class Panels extends LinearOpMode {
             // --- Outtake (G1 dpad_right held) ---
             if (gamepad1.dpad_right) {
                 intake.setPower(Intake.outtakePower);
-            } else if (intakeToggled && !shootingMode && intakeActive) {
+            } else if (intakeToggled && intakeActive) {
                 intake.setPower(Intake.intakePower);
             } else {
                 intake.setPower(0);
@@ -436,7 +461,7 @@ public class Panels extends LinearOpMode {
         frontRight.setPower(0);
         backLeft.setPower(0);
         backRight.setPower(0);
-        setColorLEDs(false);
+        // setColorLEDs(false);
         limelight.stop();
     }
 
@@ -491,33 +516,40 @@ public class Panels extends LinearOpMode {
     //  COLOR DETECTION
     // =========================================================
 
-    /** Returns "green", "purple", or null if not yet confident. */
+    /** Returns "green", "purple", or null. Each sensor uses its own ranges — either passing = detected. */
     private String detectBallColor() {
-        colorSensor1.setGain((float) ColorDetection.gain);
-        colorSensor2.setGain((float) ColorDetection.gain);
-
+        colorSensor1.setGain((float) ColorSensor1.gain);
+        colorSensor2.setGain((float) ColorSensor2.gain);
         NormalizedRGBA c1 = colorSensor1.getNormalizedColors();
         NormalizedRGBA c2 = colorSensor2.getNormalizedColors();
-
-        // Average both sensors, normalize by alpha (total light)
-        float avgR = (c1.red + c2.red) / 2f;
-        float avgG = (c1.green + c2.green) / 2f;
-        float avgB = (c1.blue + c2.blue) / 2f;
-        float avgA = (c1.alpha + c2.alpha) / 2f;
-
-        double normR = (avgA > 0) ? avgR / avgA : 0;
-        double normG = (avgA > 0) ? avgG / avgA : 0;
-        double normB = (avgA > 0) ? avgB / avgA : 0;
-
-        // Green: high green, low red and blue
-        if (normG > ColorDetection.greenMin && normR < ColorDetection.greenRedMax && normB < ColorDetection.greenBlueMax) {
-            return "green";
-        }
-        // Purple: high red and blue, low green
-        if (normR > ColorDetection.purpleRedMin && normB > ColorDetection.purpleBlueMin && normG < ColorDetection.purpleGreenMax) {
-            return "purple";
-        }
+        float a1 = Math.max(c1.alpha, 1e-6f);
+        float a2 = Math.max(c2.alpha, 1e-6f);
+        double r1 = c1.red/a1, g1 = c1.green/a1, b1 = c1.blue/a1;
+        double r2 = c2.red/a2, g2 = c2.green/a2, b2 = c2.blue/a2;
+        if (cs1IsGreen(r1,g1,b1) || cs2IsGreen(r2,g2,b2))   return "green";
+        if (cs1IsPurple(r1,g1,b1) || cs2IsPurple(r2,g2,b2)) return "purple";
         return null;
+    }
+
+    private static boolean cs1IsGreen(double r, double g, double b) {
+        return g >= ColorSensor1.greenGMin && g <= ColorSensor1.greenGMax
+            && r >= ColorSensor1.greenRMin && r <= ColorSensor1.greenRMax
+            && b >= ColorSensor1.greenBMin && b <= ColorSensor1.greenBMax;
+    }
+    private static boolean cs1IsPurple(double r, double g, double b) {
+        return r >= ColorSensor1.purpleRMin && r <= ColorSensor1.purpleRMax
+            && b >= ColorSensor1.purpleBMin && b <= ColorSensor1.purpleBMax
+            && g >= ColorSensor1.purpleGMin && g <= ColorSensor1.purpleGMax;
+    }
+    private static boolean cs2IsGreen(double r, double g, double b) {
+        return g >= ColorSensor2.greenGMin && g <= ColorSensor2.greenGMax
+            && r >= ColorSensor2.greenRMin && r <= ColorSensor2.greenRMax
+            && b >= ColorSensor2.greenBMin && b <= ColorSensor2.greenBMax;
+    }
+    private static boolean cs2IsPurple(double r, double g, double b) {
+        return r >= ColorSensor2.purpleRMin && r <= ColorSensor2.purpleRMax
+            && b >= ColorSensor2.purpleBMin && b <= ColorSensor2.purpleBMax
+            && g >= ColorSensor2.purpleGMin && g <= ColorSensor2.purpleGMax;
     }
 
     private void setColorLEDs(boolean on) {
@@ -529,16 +561,38 @@ public class Panels extends LinearOpMode {
     //  SPINDEXER SERVO
     // =========================================================
 
+    /** Sets the target position. Actual movement is slewed in updateSpindexerSlew(). */
     private void setSpindexerPosition(double pos) {
-        spindexerServo1.setPosition(pos);
-        spindexerServo2.setPosition(1.0 - pos);
+        spindexerTargetPos = Math.max(0.0, Math.min(1.0, pos));
         spindexerMoveTime = timer.milliseconds();
         sensorsEnabled = false;
     }
 
-    /** True when the spindexer has had enough time to reach its target position. */
+    /** Call every loop — slews spindexer toward target using its own timer (loop-rate independent). */
+    private void updateSpindexerSlew(double dt) {
+        double elapsed = slewTimer.seconds();
+        slewTimer.reset();
+
+        double speed = transferActive
+                ? SpindexerPositions.transferServoSpeed
+                : SpindexerPositions.servoSpeed;
+        double maxStep = speed * elapsed;
+
+        double error = spindexerTargetPos - spindexerCurrentPos;
+        if (Math.abs(error) <= maxStep) {
+            spindexerCurrentPos = spindexerTargetPos;
+        } else {
+            spindexerCurrentPos += Math.signum(error) * maxStep;
+        }
+        spindexerServo1.setPosition(spindexerCurrentPos);
+        spindexerServo2.setPosition(1.0 - spindexerCurrentPos);
+    }
+
+    /** True when spindexer has settled: time elapsed AND servo has physically reached target. */
     private boolean spindexerSettled() {
-        return (timer.milliseconds() - spindexerMoveTime) >= SpindexerPositions.settleTimeMs;
+        boolean timeOk = (timer.milliseconds() - spindexerMoveTime) >= SpindexerPositions.settleTimeMs;
+        boolean posOk  = Math.abs(spindexerCurrentPos - spindexerTargetPos) <= 0.02;
+        return timeOk && posOk;
     }
 
     /** Returns the servo position for a given intake slot (0-indexed). */
@@ -808,13 +862,33 @@ public class Panels extends LinearOpMode {
     // =========================================================
 
     private void handleTurret(double dt) {
-        // Toggle limelight tracking
+        // Toggle limelight tracking — G1 Dpad Up (or G2 Circle)
         boolean g1DpadUp = gamepad1.dpad_up;
-        if (g1DpadUp && !lastDpadUpG1) Tracking.enableTracking = !Tracking.enableTracking;
+        if (g1DpadUp && !lastDpadUpG1) {
+            Tracking.enableTracking = !Tracking.enableTracking;
+            if (Tracking.enableTracking) {
+                trackingIntegralSum = 0;
+                trackingLastError = 0;
+                gamepad1.rumble(0.8, 0.8, 300);   // ON — strong double rumble
+            } else {
+                turntable.setPower(0);
+                gamepad1.rumble(0.3, 0.3, 150);   // OFF — soft rumble
+            }
+        }
         lastDpadUpG1 = g1DpadUp;
 
         boolean g2Circle = gamepad2.circle;
-        if (g2Circle && !lastCircleG2) Tracking.enableTracking = !Tracking.enableTracking;
+        if (g2Circle && !lastCircleG2) {
+            Tracking.enableTracking = !Tracking.enableTracking;
+            if (Tracking.enableTracking) {
+                trackingIntegralSum = 0;
+                trackingLastError = 0;
+                gamepad2.rumble(0.8, 0.8, 300);
+            } else {
+                turntable.setPower(0);
+                gamepad2.rumble(0.3, 0.3, 150);
+            }
+        }
         lastCircleG2 = g2Circle;
 
         // Wraparound
@@ -857,8 +931,9 @@ public class Panels extends LinearOpMode {
                 LLResult result = limelight.getLatestResult();
                 if (result != null && result.isValid()) {
                     double tx = result.getTx();
-                    if (tx < Tracking.minTx || tx > Tracking.maxTx) {
+                    if (Math.abs(tx) > Tracking.txDeadzone) {
                         double tErr = -tx;
+                        // Reset integral on direction change to prevent overshoot
                         if (trackingLastError != 0 && Math.signum(tErr) != Math.signum(trackingLastError))
                             trackingIntegralSum = 0;
                         trackingIntegralSum = Math.max(-Tracking.integralMax,
@@ -870,6 +945,7 @@ public class Panels extends LinearOpMode {
                                 Math.min(Tracking.turretPower, tOut)));
                         trackingLastError = tErr;
                     } else {
+                        // Within deadzone — locked on target
                         turntable.setPower(0);
                         trackingIntegralSum = 0;
                         trackingLastError = 0;
@@ -1009,13 +1085,54 @@ public class Panels extends LinearOpMode {
         }
         lastSquareG1 = g1Sq;
 
-        // G1 dpad_left = advance spindexer without adding a ball
+        // G1 dpad_left = reverse one slot to unjam (does NOT change ball count)
+        // Use this if the spindexer jams mid-rotation, then manually re-register with Square
         boolean g1DpadLeft = gamepad1.dpad_left;
         if (g1DpadLeft && !lastDpadLeftG1 && !transferActive) {
-            advanceSpindexer();
+            reverseSpindexer();
             manualSpinUsed = true;
+            gamepad1.rumble(0.5, 0.5, 100);
         }
         lastDpadLeftG1 = g1DpadLeft;
+
+        // G1 Share = close range flywheel preset
+        boolean g1Share = gamepad1.share;
+        if (g1Share && !lastShareG1) {
+            Flywheel.targetVelocity = Flywheel.closeRangeVelocity;
+            shooterRumbled = false;
+            gamepad1.rumble(0.3, 0.0, 150);
+        }
+        lastShareG1 = g1Share;
+
+        // G1 Options = long range flywheel preset
+        boolean g1Options = gamepad1.options;
+        if (g1Options && !lastOptionsG1) {
+            Flywheel.targetVelocity = Flywheel.longRangeVelocity;
+            shooterRumbled = false;
+            gamepad1.rumble(0.0, 0.3, 150);
+        }
+        lastOptionsG1 = g1Options;
+
+        // G2 Share = close range flywheel preset
+        boolean g2Share = gamepad2.share;
+        if (g2Share && !lastShareG2) {
+            Flywheel.targetVelocity = Flywheel.closeRangeVelocity;
+            shooterRumbled = false;
+            gamepad2.rumble(0.3, 0.0, 150);
+        }
+        lastShareG2 = g2Share;
+
+        // G2 Options = long range flywheel preset
+        boolean g2Options = gamepad2.options;
+        if (g2Options && !lastOptionsG2) {
+            Flywheel.targetVelocity = Flywheel.longRangeVelocity;
+            shooterRumbled = false;
+            gamepad2.rumble(0.0, 0.3, 150);
+        }
+        lastOptionsG2 = g2Options;
+
+        // G2 Cross = stop flywheel
+        // (cross already used for intake toggle — skip if already mapped)
     }
 
     // =========================================================
@@ -1023,7 +1140,8 @@ public class Panels extends LinearOpMode {
     // =========================================================
 
     private boolean detectBall() {
-        return distanceSensor.getDistance(DistanceUnit.MM) <= BallDetection.detectionDistanceMM;
+        double inches = (ranger.getVoltage() * 48.7) - 4.9;
+        return inches <= BallDetection.detectionDistanceIn;
     }
 
     // =========================================================
@@ -1038,21 +1156,32 @@ public class Panels extends LinearOpMode {
         telemetry.addData("Mode", intakeMode.name() + (intakeMode == IntakeMode.SORTING ? " (color)" : " (distance only)"));
         telemetry.addData("Balls", detectedBalls + "/3  " + formatBallSlots());
         telemetry.addData("Shoot Mode", shootingMode ? "READY -> " + formatShootingOrder() : "COLLECT");
-        if (awaitingColorDetect) {
-            double remaining = colorDetectStartTime + ColorDetection.colorTimeoutMs - timer.milliseconds();
-            telemetry.addData("Color Detect", (int) remaining + "ms left");
-        }
+        // if (awaitingColorDetect) {
+        //     double remaining = colorDetectStartTime + ColorDetection.colorTimeoutMs - timer.milliseconds();
+        //     telemetry.addData("Color Detect", (int) remaining + "ms left");
+        // }
         telemetry.addData("Transfer", transferActive ? "SHOOTING" : "IDLE");
-        telemetry.addData("Sensors", sensorsEnabled ? "ON" : "WAITING");
+        telemetry.addData("Sensors", sensorsEnabled ? "ON" : "WAITING (settling)");
+        double distIn = (ranger.getVoltage() * 48.7) - 4.9;
+        telemetry.addData("Distance (in)", String.format("%.2f  [thresh=%.2f]  %s", distIn, BallDetection.detectionDistanceIn, distIn <= BallDetection.detectionDistanceIn ? "BALL" : "none"));
         telemetry.addData("Spindexer",
                 (spindexerStep == -1 ? "INIT" : "Slot " + (spindexerStep + 1))
                 + "  pos=" + String.format("%.3f", currentServoPos()));
         telemetry.addData("Pattern Match", ShootingPattern.enablePatternMatching ? "ON (G2 dpad_up)" : "OFF (G2 dpad_up)");
-        telemetry.addData("Tracking", Tracking.enableTracking ? "ON" : "OFF");
+        telemetry.addData("Tracking", Tracking.enableTracking ? "ON  [G1 dpad_up]" : "OFF [G1 dpad_up]");
+        if (Tracking.enableTracking && limelightValid) {
+            double tx = limelight.getLatestResult().getTx();
+            telemetry.addData("tx", String.format("%.2f  dead=%.2f  %s",
+                    tx, Tracking.txDeadzone, Math.abs(tx) <= Tracking.txDeadzone ? "LOCKED" : "tracking"));
+        }
         telemetry.addData("Turret", turretWraparoundActive
                 ? "WRAPPING -> " + turretWraparoundTarget
                 : turntable.getCurrentPosition() + " ticks");
-        telemetry.addData("Distance (mm)", String.format("%.1f", distanceSensor.getDistance(DistanceUnit.MM)));
+        // telemetry.addData("Distance (in)", String.format("%.2f", (ranger.getVoltage() * 48.7) - 4.9));
+        // telemetry.addData("Ranger Voltage", String.format("%.3f", ranger.getVoltage()));
+        telemetry.addData("Flywheel", String.format("actual=%.0f  target=%.0f  err=%.0f",
+                motor.getVelocity(), Flywheel.targetVelocity, Flywheel.targetVelocity - motor.getVelocity()));
+        telemetry.addData("Color Detected", lastDetectedColor != null ? lastDetectedColor.toUpperCase() : "NONE");
         telemetry.addData("Limelight", limelightValid ? "LOCKED" : "NO TARGET");
         telemetry.update();
 
@@ -1063,10 +1192,10 @@ public class Panels extends LinearOpMode {
         panelsTelemetry.addData("Balls Loaded", detectedBalls + "/3");
         panelsTelemetry.addData("Ball Slots", formatBallSlots());
         panelsTelemetry.addData("Shoot Order", formatShootingOrder());
-        if (awaitingColorDetect) {
-            double ms = colorDetectStartTime + ColorDetection.colorTimeoutMs - timer.milliseconds();
-            panelsTelemetry.addData("Color Timer", (int) ms + "ms remaining");
-        }
+        // if (awaitingColorDetect) {
+        //     double ms = colorDetectStartTime + ColorDetection.colorTimeoutMs - timer.milliseconds();
+        //     panelsTelemetry.addData("Color Timer", (int) ms + "ms remaining");
+        // }
         panelsTelemetry.addData("", "");
 
         panelsTelemetry.addData("=== SPINDEXER ===", "");
@@ -1083,29 +1212,43 @@ public class Panels extends LinearOpMode {
                 : "IDLE");
         panelsTelemetry.addData("", "");
 
-        panelsTelemetry.addData("=== SENSORS ===", "");
-        double distMM = distanceSensor.getDistance(DistanceUnit.MM);
-        panelsTelemetry.addData("Distance (mm)", String.format("%.1f", distMM));
-        panelsTelemetry.addData("Ball at sensor", distMM <= BallDetection.detectionDistanceMM ? "YES" : "NO");
-        if (intakeMode == IntakeMode.SORTING) {
-            NormalizedRGBA c1 = colorSensor1.getNormalizedColors();
-            NormalizedRGBA c2 = colorSensor2.getNormalizedColors();
-            float avgA = (c1.alpha + c2.alpha) / 2f;
-            double nR = (avgA > 0) ? (c1.red + c2.red) / 2f / avgA : 0;
-            double nG = (avgA > 0) ? (c1.green + c2.green) / 2f / avgA : 0;
-            double nB = (avgA > 0) ? (c1.blue + c2.blue) / 2f / avgA : 0;
-            panelsTelemetry.addData("Norm R/G/B", String.format("%.3f / %.3f / %.3f", nR, nG, nB));
-            panelsTelemetry.addData("Alpha (avg)", String.format("%.3f", (double) avgA));
-            panelsTelemetry.addData("Gain", ColorDetection.gain);
-        }
+        panelsTelemetry.addData("=== DISTANCE SENSOR ===", "");
+        double panelDistIn = (ranger.getVoltage() * 48.7) - 4.9;
+        panelsTelemetry.addData("Ranger Voltage", String.format("%.4fV", ranger.getVoltage()));
+        panelsTelemetry.addData("Distance (in)", String.format("%.3f", panelDistIn));
+        panelsTelemetry.addData("Threshold (in)", BallDetection.detectionDistanceIn);
+        panelsTelemetry.addData("Ball Detected", panelDistIn <= BallDetection.detectionDistanceIn ? "YES" : "NO");
+        panelsTelemetry.addData("Sensors", sensorsEnabled ? "ON" : "WAITING (spindexer settling)");
+        panelsTelemetry.addData("", "");
+
+        // Color sensors — still disabled
+        // if (intakeMode == IntakeMode.SORTING) {
+        //     NormalizedRGBA c1 = colorSensor1.getNormalizedColors();
+        //     NormalizedRGBA c2 = colorSensor2.getNormalizedColors();
+        //     float avgA = (c1.alpha + c2.alpha) / 2f;
+        //     double nR = (avgA > 0) ? (c1.red + c2.red) / 2f / avgA : 0;
+        //     double nG = (avgA > 0) ? (c1.green + c2.green) / 2f / avgA : 0;
+        //     double nB = (avgA > 0) ? (c1.blue + c2.blue) / 2f / avgA : 0;
+        //     panelsTelemetry.addData("Norm R/G/B", String.format("%.3f / %.3f / %.3f", nR, nG, nB));
+        //     panelsTelemetry.addData("Alpha (avg)", String.format("%.3f", (double) avgA));
+        //     panelsTelemetry.addData("Gain", ColorDetection.gain);
+        // }
         panelsTelemetry.addData("", "");
 
         panelsTelemetry.addData("=== SHOOTER ===", "");
         panelsTelemetry.addData("Pattern", String.join(" > ", currentPattern));
         panelsTelemetry.addData("Pattern Match", ShootingPattern.enablePatternMatching ? "ON" : "OFF");
-        panelsTelemetry.addData("Flywheel Target", Flywheel.targetVelocity);
+        panelsTelemetry.addData("Flywheel Target (tks/s)", String.format("%.1f", Flywheel.targetVelocity));
+        panelsTelemetry.addData("Flywheel Actual (tks/s)", String.format("%.1f", motor.getVelocity()));
+        panelsTelemetry.addData("Flywheel Error", String.format("%.1f", Flywheel.targetVelocity - motor.getVelocity()));
         panelsTelemetry.addData("Flywheel Power", String.format("%.3f", motor.getPower()));
+        panelsTelemetry.addData("Close Range Preset", Flywheel.closeRangeVelocity + "  [G2 Share]");
+        panelsTelemetry.addData("Long Range Preset", Flywheel.longRangeVelocity + "  [G2 Options]");
         panelsTelemetry.addData("Transfer Motor", String.format("%.3f", transferMotor.getPower()));
+        panelsTelemetry.addData("", "");
+        panelsTelemetry.addData("=== COLOR DETECTION ===", "");
+        panelsTelemetry.addData("Last Detected", lastDetectedColor != null ? lastDetectedColor.toUpperCase() : "NONE");
+        panelsTelemetry.addData("Sensors", sensorsEnabled ? "ON" : "WAITING (spindexer moving)");
         panelsTelemetry.addData("", "");
 
         panelsTelemetry.addData("=== TURRET ===", "");
@@ -1116,9 +1259,12 @@ public class Panels extends LinearOpMode {
             panelsTelemetry.addData("Turret Ticks", turntable.getCurrentPosition());
             panelsTelemetry.addData("Turret Power", String.format("%.3f", turntable.getPower()));
         }
-        panelsTelemetry.addData("Tracking", Tracking.enableTracking ? "ON" : "OFF");
+        panelsTelemetry.addData("Tracking", Tracking.enableTracking ? "ON  [G1 dpad_up]" : "OFF [G1 dpad_up]");
+        panelsTelemetry.addData("tx Deadzone", String.format("+/- %.2f", Tracking.txDeadzone));
         if (limelightValid) {
-            panelsTelemetry.addData("Limelight", "LOCKED  tx=" + String.format("%.2f", result.getTx()));
+            double tx = result.getTx();
+            panelsTelemetry.addData("tx", String.format("%.3f", tx));
+            panelsTelemetry.addData("Status", Math.abs(tx) <= Tracking.txDeadzone ? "LOCKED ON TARGET" : "TRACKING");
         } else {
             panelsTelemetry.addData("Limelight", "NO TARGET");
         }
@@ -1126,6 +1272,6 @@ public class Panels extends LinearOpMode {
     }
 
     private double currentServoPos() {
-        return (spindexerStep == -1) ? SpindexerPositions.initPosition : getSlotPosition(spindexerStep);
+        return spindexerCurrentPos;
     }
 }

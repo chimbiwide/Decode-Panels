@@ -8,13 +8,12 @@ import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.DcMotorSimple;
-import com.qualcomm.robotcore.hardware.DistanceSensor;
+import com.qualcomm.robotcore.hardware.AnalogInput;
 import com.qualcomm.robotcore.hardware.NormalizedColorSensor;
 import com.qualcomm.robotcore.hardware.NormalizedRGBA;
 import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.hardware.SwitchableLight;
 import com.qualcomm.robotcore.util.ElapsedTime;
-import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
 
 @TeleOp(name = "Color Test")
 public class ColorClass extends LinearOpMode {
@@ -26,20 +25,36 @@ public class ColorClass extends LinearOpMode {
     // =========================================================
 
     @Configurable
-    public static class ColorConfig {
+    public static class ColorSensor1 {
         public static double gain = 8.0;
+        // Green ranges (alpha-normalized)
+        public static double greenGMin = 0.35;  public static double greenGMax = 1.0;
+        public static double greenRMin = 0.0;   public static double greenRMax = 0.33;
+        public static double greenBMin = 0.0;   public static double greenBMax = 0.33;
+        // Purple ranges (alpha-normalized)
+        public static double purpleRMin = 0.30; public static double purpleRMax = 1.0;
+        public static double purpleBMin = 0.30; public static double purpleBMax = 1.0;
+        public static double purpleGMin = 0.0;  public static double purpleGMax = 0.33;
+    }
 
-        // --- Green thresholds (alpha-normalized) ---
-        public static double greenMin = 0.35;
-        public static double greenRedMax = 0.33;
-        public static double greenBlueMax = 0.33;
-
-        // --- Purple thresholds (alpha-normalized) ---
-        public static double purpleRedMin = 0.30;
-        public static double purpleBlueMin = 0.30;
-        public static double purpleGreenMax = 0.33;
-
+    @Configurable
+    public static class ColorSensor2 {
+        public static double gain = 8.0;
+        // Green ranges (alpha-normalized)
+        public static double greenGMin = 0.35;  public static double greenGMax = 1.0;
+        public static double greenRMin = 0.0;   public static double greenRMax = 0.33;
+        public static double greenBMin = 0.0;   public static double greenBMax = 0.33;
+        // Purple ranges (alpha-normalized)
+        public static double purpleRMin = 0.30; public static double purpleRMax = 1.0;
+        public static double purpleBMin = 0.30; public static double purpleBMax = 1.0;
+        public static double purpleGMin = 0.0;  public static double purpleGMax = 0.33;
         public static boolean enableLEDs = true;
+    }
+
+    @Configurable
+    public static class DistanceConfig {
+        // Detection threshold in inches (SwyftRanger 20° formula: voltage*48.7 - 4.9)
+        public static double detectionDistanceIn = 3.0;
     }
 
     @Configurable
@@ -48,19 +63,24 @@ public class ColorClass extends LinearOpMode {
         public static double slot1 = 0.097;
         public static double slot2 = 0.287;
         public static double slot3 = 0.477;
-        public static double stepSize = 0.2353;
-        public static double shootRotation = 0.4706;
+        public static double fullRotation = 0.582;
+        public static double transferDurationMs = 1000;
         // Time (ms) after servo move before sensors activate
         public static double settleTimeMs = 300;
         // Auto-advance spindexer after ball detected
         public static boolean autoAdvance = true;
+        // Servo slew speed in servo-units per SECOND (loop-rate independent).
+        // 5.0 = near-instant, 0.5 = one slot in ~0.5s, 0.2 = one slot in ~1.2s
+        public static double servoSpeed = 5.0;
+        // Speed during 360° transfer spin — lower = slower spin
+        public static double transferServoSpeed = 0.5;
     }
 
     @Configurable
     public static class IntakeConfig {
         public static double intakePower = 1.0;
         public static double outtakePower = -1.0;
-        public static double detectionDistanceMM = 50.0;
+        public static double detectionDistanceIn = 3.0;
         public static double colorTimeoutMs = 2000.0;
         // Pause intake briefly after ball detected (ms)
         public static double pauseOnDetectMs = 100;
@@ -72,7 +92,7 @@ public class ColorClass extends LinearOpMode {
 
     private NormalizedColorSensor colorSensor1;
     private NormalizedColorSensor colorSensor2;
-    private DistanceSensor distanceSensor;
+    private AnalogInput ranger;
     private DcMotorEx intake;
     private Servo spindexerServo1;
     private Servo spindexerServo2;
@@ -82,6 +102,7 @@ public class ColorClass extends LinearOpMode {
     // =========================================================
 
     private final ElapsedTime timer = new ElapsedTime();
+    private final ElapsedTime slewTimer = new ElapsedTime();
 
     // Intake
     private boolean intakeToggled = false;
@@ -98,8 +119,12 @@ public class ColorClass extends LinearOpMode {
 
     // Spindexer
     private int spindexerStep = -1;
+    private double spindexerTargetPos = 0.5;
+    private double spindexerCurrentPos = 0.5;
     private double spindexerMoveTime = 0;
     private boolean sensorsEnabled = false;
+    private boolean transferActive = false;
+    private double transferStartTime = 0;
 
     // Intake pause
     private double intakePauseUntil = 0;
@@ -119,13 +144,13 @@ public class ColorClass extends LinearOpMode {
     public void runOpMode() {
         colorSensor1 = hardwareMap.get(NormalizedColorSensor.class, "colorSensor1");
         colorSensor2 = hardwareMap.get(NormalizedColorSensor.class, "colorSensor2");
-        distanceSensor = hardwareMap.get(DistanceSensor.class, "distanceSensor");
+        ranger = hardwareMap.get(AnalogInput.class, "distanceSensor");
         intake = hardwareMap.get(DcMotorEx.class, "intake");
         intake.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
         intake.setDirection(DcMotorSimple.Direction.FORWARD);
         intake.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
-        spindexerServo1 = hardwareMap.get(Servo.class, "spindexerServo1");
-        spindexerServo2 = hardwareMap.get(Servo.class, "spindexerServo2");
+        spindexerServo1 = hardwareMap.get(Servo.class, "servo1");
+        spindexerServo2 = hardwareMap.get(Servo.class, "servo2");
 
         spindexerStep = -1;
         setSpindexerPosition(SpindexerConfig.initPosition);
@@ -142,15 +167,24 @@ public class ColorClass extends LinearOpMode {
         while (opModeIsActive()) {
             double nowMs = timer.milliseconds();
 
+            updateSpindexerSlew();
+
+            // Transfer timer
+            if (transferActive && (nowMs - transferStartTime) >= SpindexerConfig.transferDurationMs) {
+                transferActive = false;
+                clearBalls();
+                intakeToggled = false;
+            }
+
             // Apply gain
-            colorSensor1.setGain((float) ColorConfig.gain);
-            colorSensor2.setGain((float) ColorConfig.gain);
+            colorSensor1.setGain((float) ColorSensor1.gain);
+            colorSensor2.setGain((float) ColorSensor2.gain);
 
             // --- Sensor gating: only enable when spindexer is settled ---
             if (spindexerSettled() && !sensorsEnabled) {
                 sensorsEnabled = true;
             }
-            setLEDs(sensorsEnabled && ColorConfig.enableLEDs);
+            setLEDs(sensorsEnabled && ColorSensor2.enableLEDs);
 
             // --- Cross (X): Toggle intake ---
             boolean cross = gamepad1.cross;
@@ -236,12 +270,13 @@ public class ColorClass extends LinearOpMode {
             }
             lastTriangle = triangle;
 
-            // --- Circle: shoot (rotate full 240°) ---
+            // --- Circle: shoot (rotate fullRotation using transferServoSpeed) ---
             boolean circle = gamepad1.circle;
-            if (circle && !lastCircle && detectedBalls > 0) {
+            if (circle && !lastCircle && !transferActive) {
                 double startPos = (spindexerStep >= 0) ? getSlotPosition(spindexerStep) : SpindexerConfig.slot1;
-                setSpindexerPosition(clamp(startPos + SpindexerConfig.shootRotation));
-                clearBalls();
+                setSpindexerPosition(clamp(startPos + SpindexerConfig.fullRotation));
+                transferActive = true;
+                transferStartTime = nowMs;
             }
             lastCircle = circle;
 
@@ -256,81 +291,72 @@ public class ColorClass extends LinearOpMode {
                 // Don't reset spindexerMoveTime for manual — no settle needed for tiny moves
             }
 
-            // --- Read colors for telemetry ---
+            // --- Read both sensors with their own gains ---
+            colorSensor1.setGain((float) ColorSensor1.gain);
+            colorSensor2.setGain((float) ColorSensor2.gain);
             NormalizedRGBA raw1 = colorSensor1.getNormalizedColors();
             NormalizedRGBA raw2 = colorSensor2.getNormalizedColors();
-            float avgR = (raw1.red + raw2.red) / 2f;
-            float avgG = (raw1.green + raw2.green) / 2f;
-            float avgB = (raw1.blue + raw2.blue) / 2f;
-            float avgA = (raw1.alpha + raw2.alpha) / 2f;
-            double normR = (avgA > 0) ? avgR / avgA : 0;
-            double normG = (avgA > 0) ? avgG / avgA : 0;
-            double normB = (avgA > 0) ? avgB / avgA : 0;
-            String detected = detectColor(normR, normG, normB);
-            double distMM = distanceSensor.getDistance(DistanceUnit.MM);
             float a1 = Math.max(raw1.alpha, 1e-6f);
             float a2 = Math.max(raw2.alpha, 1e-6f);
+            double cs1R = raw1.red / a1,  cs1G = raw1.green / a1,  cs1B = raw1.blue / a1;
+            double cs2R = raw2.red / a2,  cs2G = raw2.green / a2,  cs2B = raw2.blue / a2;
+            boolean cs1Green  = cs1IsGreen(cs1R, cs1G, cs1B);
+            boolean cs2Green  = cs2IsGreen(cs2R, cs2G, cs2B);
+            boolean cs1Purple = cs1IsPurple(cs1R, cs1G, cs1B);
+            boolean cs2Purple = cs2IsPurple(cs2R, cs2G, cs2B);
+            String detected = (cs1Green || cs2Green) ? "green"
+                            : (cs1Purple || cs2Purple) ? "purple" : null;
+
+            // --- Distance ---
+            double voltage   = ranger.getVoltage();
+            double distIn    = (voltage * 48.7) - 4.9;
+            boolean ballHere = distIn <= DistanceConfig.detectionDistanceIn;
 
             // --- Driver station ---
             telemetry.addData("DETECTED", detected != null ? detected.toUpperCase() : "NONE");
+            telemetry.addData("CS1", String.format("R=%.3f G=%.3f B=%.3f  %s", cs1R, cs1G, cs1B, cs1Green ? "GREEN" : cs1Purple ? "PURPLE" : "none"));
+            telemetry.addData("CS2", String.format("R=%.3f G=%.3f B=%.3f  %s", cs2R, cs2G, cs2B, cs2Green ? "GREEN" : cs2Purple ? "PURPLE" : "none"));
+            telemetry.addData("Gain CS1/CS2", ColorSensor1.gain + " / " + ColorSensor2.gain);
+            telemetry.addData("Distance (in)", String.format("%.2f  [thresh=%.2f]  %s", distIn, DistanceConfig.detectionDistanceIn, ballHere ? "BALL" : "none"));
+            telemetry.addData("Ranger Voltage", String.format("%.3fV", voltage));
             telemetry.addData("Intake", intakeToggled ? "ON" : "OFF");
             telemetry.addData("Balls", detectedBalls + "/3  " + formatBallSlots());
-            telemetry.addData("Sensors", sensorsEnabled ? "ON" : "WAITING");
-            telemetry.addData("Spindexer",
-                    (spindexerStep == -1 ? "INIT" : "Slot " + (spindexerStep + 1))
-                    + "  pos=" + String.format("%.3f", currentServoPos()));
-            telemetry.addData("Distance (mm)", String.format("%.1f", distMM));
-            telemetry.addData("Norm R/G/B", "%.3f / %.3f / %.3f", normR, normG, normB);
-            telemetry.addData("Gain", ColorConfig.gain);
-            telemetry.addData("", "");
+            telemetry.addData("Spindexer", (spindexerStep == -1 ? "INIT" : "Slot " + (spindexerStep + 1)) + "  pos=" + String.format("%.3f", currentServoPos()));
             telemetry.addData("Controls", "X intake  [] add  O shoot  /\\ reset  v reverse  triggers manual");
             telemetry.update();
 
             // --- Panels dashboard ---
+            panelsTelemetry.addData("=== DETECTED ===", detected != null ? detected.toUpperCase() : "NONE");
+            panelsTelemetry.addData("", "");
+
+            panelsTelemetry.addData("=== COLOR SENSOR 1 ===", "gain=" + ColorSensor1.gain);
+            panelsTelemetry.addData("CS1 Norm R", String.format("%.4f  [%.2f–%.2f]  %s", cs1R, ColorSensor1.greenRMin, ColorSensor1.greenRMax, (cs1R >= ColorSensor1.greenRMin && cs1R <= ColorSensor1.greenRMax) ? "OK" : "--"));
+            panelsTelemetry.addData("CS1 Norm G", String.format("%.4f  [%.2f–%.2f]  %s", cs1G, ColorSensor1.greenGMin, ColorSensor1.greenGMax, (cs1G >= ColorSensor1.greenGMin && cs1G <= ColorSensor1.greenGMax) ? "OK" : "--"));
+            panelsTelemetry.addData("CS1 Norm B", String.format("%.4f  [%.2f–%.2f]  %s", cs1B, ColorSensor1.greenBMin, ColorSensor1.greenBMax, (cs1B >= ColorSensor1.greenBMin && cs1B <= ColorSensor1.greenBMax) ? "OK" : "--"));
+            panelsTelemetry.addData("CS1 Alpha", String.format("%.4f", (double) raw1.alpha));
+            panelsTelemetry.addData("CS1 Result", cs1Green ? "GREEN" : cs1Purple ? "PURPLE" : "none");
+            panelsTelemetry.addData("", "");
+
+            panelsTelemetry.addData("=== COLOR SENSOR 2 ===", "gain=" + ColorSensor2.gain);
+            panelsTelemetry.addData("CS2 Norm R", String.format("%.4f  [%.2f–%.2f]  %s", cs2R, ColorSensor2.greenRMin, ColorSensor2.greenRMax, (cs2R >= ColorSensor2.greenRMin && cs2R <= ColorSensor2.greenRMax) ? "OK" : "--"));
+            panelsTelemetry.addData("CS2 Norm G", String.format("%.4f  [%.2f–%.2f]  %s", cs2G, ColorSensor2.greenGMin, ColorSensor2.greenGMax, (cs2G >= ColorSensor2.greenGMin && cs2G <= ColorSensor2.greenGMax) ? "OK" : "--"));
+            panelsTelemetry.addData("CS2 Norm B", String.format("%.4f  [%.2f–%.2f]  %s", cs2B, ColorSensor2.greenBMin, ColorSensor2.greenBMax, (cs2B >= ColorSensor2.greenBMin && cs2B <= ColorSensor2.greenBMax) ? "OK" : "--"));
+            panelsTelemetry.addData("CS2 Alpha", String.format("%.4f", (double) raw2.alpha));
+            panelsTelemetry.addData("CS2 Result", cs2Green ? "GREEN" : cs2Purple ? "PURPLE" : "none");
+            panelsTelemetry.addData("", "");
+
+            panelsTelemetry.addData("=== DISTANCE SENSOR ===", "");
+            panelsTelemetry.addData("Voltage", String.format("%.4fV", voltage));
+            panelsTelemetry.addData("Distance (in)", String.format("%.3f", distIn));
+            panelsTelemetry.addData("Threshold (in)", DistanceConfig.detectionDistanceIn);
+            panelsTelemetry.addData("Ball Detected", ballHere ? "YES" : "NO");
+            panelsTelemetry.addData("", "");
+
             panelsTelemetry.addData("=== STATE ===", "");
-            panelsTelemetry.addData("Detected", detected != null ? detected.toUpperCase() : "NONE");
             panelsTelemetry.addData("Intake", intakeToggled ? "ON" : "OFF");
             panelsTelemetry.addData("Balls", detectedBalls + "/3  " + formatBallSlots());
-            panelsTelemetry.addData("Sensors", sensorsEnabled ? "ON" : "WAITING");
-            panelsTelemetry.addData("Spindexer Slot", spindexerStep == -1 ? "INIT" : "Slot " + (spindexerStep + 1));
-            panelsTelemetry.addData("Servo1 pos", String.format("%.4f", currentServoPos()));
-            panelsTelemetry.addData("Distance (mm)", String.format("%.1f", distMM));
-            panelsTelemetry.addData("Ball at sensor", distMM <= IntakeConfig.detectionDistanceMM ? "YES" : "NO");
-            panelsTelemetry.addData("", "");
-
-            panelsTelemetry.addData("=== COLOR (normalized) ===", "");
-            panelsTelemetry.addData("Norm R", String.format("%.4f", normR));
-            panelsTelemetry.addData("Norm G", String.format("%.4f", normG));
-            panelsTelemetry.addData("Norm B", String.format("%.4f", normB));
-            panelsTelemetry.addData("Avg Alpha", String.format("%.4f", (double) avgA));
-            panelsTelemetry.addData("Gain", ColorConfig.gain);
-            panelsTelemetry.addData("", "");
-
-            panelsTelemetry.addData("=== GREEN CHECK ===", "");
-            panelsTelemetry.addData("normG > greenMin?",
-                    String.format("%.3f > %.3f = %s", normG, ColorConfig.greenMin, normG > ColorConfig.greenMin));
-            panelsTelemetry.addData("normR < greenRedMax?",
-                    String.format("%.3f < %.3f = %s", normR, ColorConfig.greenRedMax, normR < ColorConfig.greenRedMax));
-            panelsTelemetry.addData("normB < greenBlueMax?",
-                    String.format("%.3f < %.3f = %s", normB, ColorConfig.greenBlueMax, normB < ColorConfig.greenBlueMax));
-            panelsTelemetry.addData("", "");
-            panelsTelemetry.addData("=== PURPLE CHECK ===", "");
-            panelsTelemetry.addData("normR > purpleRedMin?",
-                    String.format("%.3f > %.3f = %s", normR, ColorConfig.purpleRedMin, normR > ColorConfig.purpleRedMin));
-            panelsTelemetry.addData("normB > purpleBlueMin?",
-                    String.format("%.3f > %.3f = %s", normB, ColorConfig.purpleBlueMin, normB > ColorConfig.purpleBlueMin));
-            panelsTelemetry.addData("normG < purpleGreenMax?",
-                    String.format("%.3f < %.3f = %s", normG, ColorConfig.purpleGreenMax, normG < ColorConfig.purpleGreenMax));
-            panelsTelemetry.addData("", "");
-            panelsTelemetry.addData("=== RAW PER SENSOR ===", "");
-            panelsTelemetry.addData("CS1 R/G/B/A", String.format("%.3f / %.3f / %.3f / %.3f",
-                    (double) raw1.red, (double) raw1.green, (double) raw1.blue, (double) raw1.alpha));
-            panelsTelemetry.addData("CS1 norm R/G/B", String.format("%.3f / %.3f / %.3f",
-                    (double) (raw1.red / a1), (double) (raw1.green / a1), (double) (raw1.blue / a1)));
-            panelsTelemetry.addData("CS2 R/G/B/A", String.format("%.3f / %.3f / %.3f / %.3f",
-                    (double) raw2.red, (double) raw2.green, (double) raw2.blue, (double) raw2.alpha));
-            panelsTelemetry.addData("CS2 norm R/G/B", String.format("%.3f / %.3f / %.3f",
-                    (double) (raw2.red / a2), (double) (raw2.green / a2), (double) (raw2.blue / a2)));
+            panelsTelemetry.addData("Spindexer", spindexerStep == -1 ? "INIT" : "Slot " + (spindexerStep + 1));
+            panelsTelemetry.addData("Servo pos", String.format("%.4f", currentServoPos()));
             panelsTelemetry.update();
         }
 
@@ -343,31 +369,44 @@ public class ColorClass extends LinearOpMode {
     //  COLOR DETECTION
     // =========================================================
 
-    public static String detectColor(double normR, double normG, double normB) {
-        if (normG > ColorConfig.greenMin && normR < ColorConfig.greenRedMax && normB < ColorConfig.greenBlueMax) {
-            return "green";
-        }
-        if (normR > ColorConfig.purpleRedMin && normB > ColorConfig.purpleBlueMin && normG < ColorConfig.purpleGreenMax) {
-            return "purple";
-        }
+    private static boolean cs1IsGreen(double r, double g, double b) {
+        return g >= ColorSensor1.greenGMin && g <= ColorSensor1.greenGMax
+            && r >= ColorSensor1.greenRMin && r <= ColorSensor1.greenRMax
+            && b >= ColorSensor1.greenBMin && b <= ColorSensor1.greenBMax;
+    }
+    private static boolean cs1IsPurple(double r, double g, double b) {
+        return r >= ColorSensor1.purpleRMin && r <= ColorSensor1.purpleRMax
+            && b >= ColorSensor1.purpleBMin && b <= ColorSensor1.purpleBMax
+            && g >= ColorSensor1.purpleGMin && g <= ColorSensor1.purpleGMax;
+    }
+    private static boolean cs2IsGreen(double r, double g, double b) {
+        return g >= ColorSensor2.greenGMin && g <= ColorSensor2.greenGMax
+            && r >= ColorSensor2.greenRMin && r <= ColorSensor2.greenRMax
+            && b >= ColorSensor2.greenBMin && b <= ColorSensor2.greenBMax;
+    }
+    private static boolean cs2IsPurple(double r, double g, double b) {
+        return r >= ColorSensor2.purpleRMin && r <= ColorSensor2.purpleRMax
+            && b >= ColorSensor2.purpleBMin && b <= ColorSensor2.purpleBMax
+            && g >= ColorSensor2.purpleGMin && g <= ColorSensor2.purpleGMax;
+    }
+
+    /** Check each sensor with its own ranges — either passing = detected. */
+    private String detectBallColor() {
+        colorSensor1.setGain((float) ColorSensor1.gain);
+        colorSensor2.setGain((float) ColorSensor2.gain);
+        NormalizedRGBA c1 = colorSensor1.getNormalizedColors();
+        NormalizedRGBA c2 = colorSensor2.getNormalizedColors();
+        float a1 = Math.max(c1.alpha, 1e-6f);
+        float a2 = Math.max(c2.alpha, 1e-6f);
+        double r1 = c1.red/a1, g1 = c1.green/a1, b1 = c1.blue/a1;
+        double r2 = c2.red/a2, g2 = c2.green/a2, b2 = c2.blue/a2;
+        if (cs1IsGreen(r1,g1,b1) || cs2IsGreen(r2,g2,b2))   return "green";
+        if (cs1IsPurple(r1,g1,b1) || cs2IsPurple(r2,g2,b2)) return "purple";
         return null;
     }
 
-    private String detectBallColor() {
-        NormalizedRGBA c1 = colorSensor1.getNormalizedColors();
-        NormalizedRGBA c2 = colorSensor2.getNormalizedColors();
-        float avgR = (c1.red + c2.red) / 2f;
-        float avgG = (c1.green + c2.green) / 2f;
-        float avgB = (c1.blue + c2.blue) / 2f;
-        float avgA = (c1.alpha + c2.alpha) / 2f;
-        double normR = (avgA > 0) ? avgR / avgA : 0;
-        double normG = (avgA > 0) ? avgG / avgA : 0;
-        double normB = (avgA > 0) ? avgB / avgA : 0;
-        return detectColor(normR, normG, normB);
-    }
-
     private boolean detectBall() {
-        return distanceSensor.getDistance(DistanceUnit.MM) <= IntakeConfig.detectionDistanceMM;
+        return ((ranger.getVoltage() * 48.7) - 4.9) <= DistanceConfig.detectionDistanceIn;
     }
 
     // =========================================================
@@ -375,11 +414,24 @@ public class ColorClass extends LinearOpMode {
     // =========================================================
 
     private void setSpindexerPosition(double pos) {
-        pos = clamp(pos);
-        spindexerServo1.setPosition(pos);
-        spindexerServo2.setPosition(1.0 - pos);
+        spindexerTargetPos = clamp(pos);
         spindexerMoveTime = timer.milliseconds();
         sensorsEnabled = false;
+    }
+
+    private void updateSpindexerSlew() {
+        double elapsed = slewTimer.seconds();
+        slewTimer.reset();
+        double speed = transferActive ? SpindexerConfig.transferServoSpeed : SpindexerConfig.servoSpeed;
+        double maxStep = speed * elapsed;
+        double error = spindexerTargetPos - spindexerCurrentPos;
+        if (Math.abs(error) <= maxStep) {
+            spindexerCurrentPos = spindexerTargetPos;
+        } else {
+            spindexerCurrentPos += Math.signum(error) * maxStep;
+        }
+        spindexerServo1.setPosition(spindexerCurrentPos);
+        spindexerServo2.setPosition(1.0 - spindexerCurrentPos);
     }
 
     private boolean spindexerSettled() {
