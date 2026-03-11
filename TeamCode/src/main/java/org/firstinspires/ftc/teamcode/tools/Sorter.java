@@ -1,231 +1,420 @@
 package org.firstinspires.ftc.teamcode.tools;
 
-import static org.firstinspires.ftc.teamcode.clawtest.sleep;
-
+import com.bylazar.configurables.annotations.Configurable;
 import com.qualcomm.robotcore.hardware.DcMotor;
+import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.HardwareMap;
+import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.util.ElapsedTime;
 
 public class Sorter {
-    private static DcMotor sorter;
-    static int targetPosition = 0;
-    static double stepTicks = 180;
-    public static double shootingModeOffset = 90;
-    private static boolean inShootingMode = false;
-    static int currentPort = 0;
-    private static int startPos = 1;
-    static String[] ports = new String[3]; // "P", "G", or null
 
-    // PID gains per ball count (index 0 = 0-1 balls, 1 = 2 balls, 2 = 3 balls)
-    //0.01
-    public static double[] kPs = {0.004, 0.004, 0.004}; //was 0.01
-    public static double[] kIs = {0.0001, 0.0001, 0.0001};
-    public static double[] kDs = {0.0001, 0.0001, 0.0001};
-    private static double integralMax = 0.3;
-    private static double maxPower = 1.0;
-    private static double positionTolerance = 5.0;
+    @Configurable
+    public static class SpindexerPositions {
+        public static double initPosition = 0.5;
+        public static double slot1 = 0.097;
+        public static double slot2 = 0.2854;
+        public static double slot3 = 0.4737;
+        public static double fullRotation = 0.5653;
+        public static double shootTolerance = 0.05;
+    }
 
-    // PID state
-    private static double integralSum = 0;
-    private static double lastError = 0;
-    private static ElapsedTime timer = new ElapsedTime();
-    private static double lastTime = 0;
+    @Configurable
+    public static class SpindexerDelays {
+        public static double transferDurationMs = 1500;
+        public static double settleTimeMs = 200;
+        public static double moveWaitMs = 300;
+        public static double intakeServoSpeed = 0.5;
+        public static double shootServoSpeed = 0.9;
+        public static double pauseOnDetectMs = 300;
+        public static double shootDelayMs = 0;
+        public static double manualBumperSpeed = 0.3;
+    }
+
+    @Configurable
+    public static class TransferSettings {
+        public static boolean preventZeroBallTransfer = false;
+        public static double transferTimeoutMs = 5000;
+        public static boolean enableTransferTimeout = true;
+        public static boolean autoPauseAfterShoot = true;
+        public static double shootPower = -1.0;
+        public static double manualPower = 1.0;
+    }
+
+    @Configurable
+    public static class ShootingPattern {
+        public static String pattern = "green,purple,purple";
+        public static boolean enablePatternMatching = true;
+        public static boolean enablePatternCycling = true;
+    }
+
+    private static Servo servo1;
+    private static Servo servo2;
+    private static DcMotorEx transferMotor;
+    private static final ElapsedTime timer = new ElapsedTime();
+    private static final ElapsedTime slewTimer = new ElapsedTime();
+
+    private static int currentPort = 0;
+    private static double targetPos = 0.5;
+    private static double currentPos = 0.5;
+    private static double moveTime = 0;
+    private static boolean sensorsGated = true;
+
+    private static boolean transferActive = false;
+    private static boolean transferPending = false;
+    private static double transferStartTime = 0;
+    private static int originalBallCount = 0;
+
+    private static String[] ports = new String[3];
+    private static String[] currentPattern = {"green", "purple", "purple"};
 
     public static void init(HardwareMap map) {
-       sorter = map.get(DcMotor.class, "spindexer");
-       sorter.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
-       sorter.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
-       sorter.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
-       // Reset all static state from previous OpMode runs
-       targetPosition = 0;
-       currentPort = 0;
-       inShootingMode = false;
-       manualMode = false;
-       clearPorts();
-       timer.reset();
-       lastTime = 0;
-       resetPID();
-    }
+        servo1 = map.get(Servo.class, "servo1");
+        servo2 = map.get(Servo.class, "servo2");
+        transferMotor = map.get(DcMotorEx.class, "transfer");
+        transferMotor.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        transferMotor.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
 
-    public static void turn(int turns) {
-        targetPosition += (int)(stepTicks * turns);
-        // Calculate current port (handle negative modulo correctly)
-        currentPort = ((currentPort + turns) % 3 + 3) % 3;
-    }
+        currentPort = 0;
+        targetPos = SpindexerPositions.initPosition;
+        currentPos = SpindexerPositions.initPosition;
+        moveTime = 0;
+        sensorsGated = true;
+        transferActive = false;
+        transferPending = false;
+        ports = new String[3];
 
-    public static void turnToPort(int port) {
-        turn(port - currentPort);
-    }
-
-    public static void update() {
-        if (manualMode) return; // Skip PID when under direct power control
-
-        double currentTime = timer.seconds();
-        double dt = currentTime - lastTime;
-        lastTime = currentTime;
-        dt = Math.max(dt, 1e-3);
-
-        int currentPos = sorter.getCurrentPosition();
-        double error = targetPosition - currentPos;
-
-        if (Math.abs(error) > positionTolerance) {
-            // Select PID gains based on ball count
-            int ballCount = getBallCount();
-            int pidIndex = Math.max(0, Math.min(2, ballCount - 1)); // 0-1 balls → 0, 2 → 1, 3 → 2
-            if (ballCount == 0) pidIndex = 0;
-            double kP = kPs[pidIndex];
-            double kI = kIs[pidIndex];
-            double kD = kDs[pidIndex];
-
-            // Integral with anti-windup
-            integralSum += error * dt;
-            integralSum = Math.max(-integralMax, Math.min(integralMax, integralSum));
-
-            // Derivative
-            double derivative = (error - lastError) / dt;
-
-            // PID output
-            double output = (kP * error) + (kI * integralSum) + (kD * derivative);
-            output = Math.max(-maxPower, Math.min(maxPower, output));
-
-            sorter.setPower(output);
-            lastError = error;
+        String[] initial = ShootingPattern.pattern.split(",");
+        if (initial.length == 3) {
+            currentPattern = new String[]{initial[0].trim(), initial[1].trim(), initial[2].trim()};
         } else {
-            sorter.setPower(0);
-            integralSum = 0;
+            currentPattern = new String[]{"green", "purple", "purple"};
+        }
+
+        servo1.setPosition(currentPos);
+        servo2.setPosition(1.0 - currentPos);
+        timer.reset();
+        slewTimer.reset();
+    }
+
+    public static void setPosition(double pos) {
+        targetPos = Math.max(0.0, Math.min(1.0, pos));
+        moveTime = timer.milliseconds();
+        sensorsGated = true;
+    }
+
+    public static void updateSlew() {
+        double elapsed = slewTimer.seconds();
+        slewTimer.reset();
+        double speed = transferActive ? SpindexerDelays.shootServoSpeed : SpindexerDelays.intakeServoSpeed;
+        double maxStep = speed * elapsed;
+        double error = targetPos - currentPos;
+        if (Math.abs(error) <= maxStep) {
+            currentPos = targetPos;
+        } else {
+            currentPos += Math.signum(error) * maxStep;
+        }
+        servo1.setPosition(currentPos);
+        servo2.setPosition(1.0 - currentPos);
+    }
+
+    public static boolean isSettled() {
+        return (timer.milliseconds() - moveTime) >= SpindexerDelays.settleTimeMs
+                && Math.abs(currentPos - targetPos) <= 0.02;
+    }
+
+    public static boolean isSensorsGated() { return sensorsGated; }
+    public static void clearSensorGate() { sensorsGated = false; }
+
+    public static double getSlotPosition(int slot) {
+        switch (slot) {
+            case 0: return SpindexerPositions.slot1;
+            case 1: return SpindexerPositions.slot2;
+            case 2: return SpindexerPositions.slot3;
+            default: return SpindexerPositions.initPosition;
         }
     }
 
-    public static void resetPID() {
-        integralSum = 0;
-        lastError = 0;
-        lastTime = timer.seconds();
+    private static void shufflePorts(int turns) {
+        String[] newPorts = new String[3];
+        for (int i = 0; i < 3; i++) {
+            int index = ((i - turns) % 3 + 3) % 3;
+            newPorts[i] = ports[index];
+        }
+        ports = newPorts;
     }
 
-    public static void updatePorts(String ballColor) {
-        ports[currentPort] = ballColor;
+    public static void turnToPort(int port) {
+        int turns = port - currentPort;
+        shufflePorts(turns);
+        currentPort = port;
+        setPosition(getSlotPosition(port));
     }
 
-    public static String[] getPorts() {
-        return ports;
+    public static void advanceSpindexer() {
+        if (currentPort < 2) {
+            currentPort++;
+            shufflePorts(1);
+            setPosition(getSlotPosition(currentPort));
+        }
     }
 
-    public static int getPosition() {
-        return sorter.getCurrentPosition();
+    public static void reverseSpindexer() {
+        if (currentPort > 0) {
+            currentPort--;
+            shufflePorts(-1);
+            setPosition(getSlotPosition(currentPort));
+        } else {
+            currentPort = 0;
+            setPosition(SpindexerPositions.initPosition);
+        }
     }
 
-    public static int getTargetPosition() {
-        return targetPosition;
+    public static void activateSlot1() {
+        if (currentPort == 0 && Math.abs(currentPos - SpindexerPositions.slot1) > 0.02) {
+            setPosition(SpindexerPositions.slot1);
+        }
     }
 
-    public static boolean isBusy() {
-        return Math.abs(targetPosition - sorter.getCurrentPosition()) > positionTolerance;
+    public static void commitBall(String color) {
+        ports[0] = color;
+        advanceSpindexer();
+    }
+
+    public static void removeBall() {
+        if (getBallCount() > 0) {
+            ports[0] = null;
+            reverseSpindexer();
+        }
+    }
+
+    public static void manualAddBall() {
+        if (getBallCount() < 3) {
+            ports[0] = "unknown";
+            advanceSpindexer();
+        } else {
+            advanceSpindexer();
+        }
+    }
+
+    public static void clearBalls() {
+        ports = new String[3];
+        currentPort = 0;
+        setPosition(SpindexerPositions.slot1);
+    }
+
+    public static void zeroServos() {
+        currentPort = 0;
+        targetPos = 0.0;
+        currentPos = 0.0;
+        servo1.setPosition(0.0);
+        servo2.setPosition(1.0);
+        sensorsGated = true;
+        transferActive = false;
+        transferPending = false;
+        ports = new String[3];
     }
 
     public static int getBallCount() {
         int count = 0;
-        for (String item : ports) {
-            if (item != null) count++;
+        for (String p : ports) {
+            if (p != null) count++;
         }
         return count;
     }
 
     public static boolean isFull() {
-        for (String item : ports) {
-            if (item == null) {
-                return false;
-            }
+        for (String p : ports) {
+            if (p == null) return false;
         }
         return true;
     }
 
-    public static void enterShootingMode() {
-        if (!inShootingMode) {
-            targetPosition += (int) shootingModeOffset;
-            inShootingMode = true;
+    public static boolean readyForPattern() {
+        int green = 0, purple = 0;
+        for (String p : ports) {
+            if (p != null) {
+                if (p.equals("green")) purple++;
+                else green++;
+            }
         }
+        return green == 1 && purple == 2;
     }
 
-    public static void exitShootingMode() {
-        if (inShootingMode) {
-            targetPosition -= (int) shootingModeOffset;
-            inShootingMode = false;
-        }
-    }
-
-    public static boolean isInShootingMode() {
-        return inShootingMode;
-    }
-
-    public static void clearPorts() {
+    private static int getGreenBall() {
         for (int i = 0; i < ports.length; i++) {
-            ports[i] = null;
+            if (ports[i] != null && ports[i].equals("green")) return i;
         }
-        currentPort = 0;
+        return -1;
     }
 
-    // Direct power control bypassing PID. Call syncTarget() when releasing.
-    private static boolean manualMode = false;
+    public static void rotateForShooting(boolean sorting) {
+        if (!sorting || !ShootingPattern.enablePatternMatching || getBallCount() == 0) {
+            turnToPort(0);
+            return;
+        }
+        if (!readyForPattern()) {
+            turnToPort(0);
+            return;
+        }
+        int greenIdx = getGreenBall();
+        if (greenIdx == -1) {
+            turnToPort(0);
+            return;
+        }
+        String first = currentPattern[0].trim();
+        String second = currentPattern[1].trim();
+        String third = currentPattern[2].trim();
 
-    public static void setManualPower(double power) {
-        manualMode = true;
-        sorter.setPower(power);
+        if (first.equals("green")) {
+            if (greenIdx == 0) turnToPort(0);
+            else if (greenIdx == 2) turnToPort(1);
+            else turnToPort(0);
+        } else if (second.equals("green")) {
+            if (greenIdx == 2) turnToPort(0);
+            else if (greenIdx == 1) turnToPort(1);
+            else turnToPort(0);
+        } else if (third.equals("green")) {
+            if (greenIdx == 1) turnToPort(0);
+            else if (greenIdx == 0) turnToPort(1);
+            else turnToPort(0);
+        } else {
+            turnToPort(0);
+        }
     }
 
-    public static void syncTarget() {
-        // Sync PID target to current position so it doesn't snap back
-        targetPosition = sorter.getCurrentPosition();
-        manualMode = false;
-        resetPID();
+    public static boolean startTransfer() {
+        if (TransferSettings.preventZeroBallTransfer && getBallCount() == 0) return false;
+        double maxAllowed = 1.0 - SpindexerPositions.fullRotation - SpindexerPositions.shootTolerance;
+        if (currentPos > maxAllowed) {
+            turnToPort(0);
+            transferPending = true;
+            return true;
+        }
+        beginTransferSpin();
+        return true;
     }
 
-    public static boolean isManualMode() {
-        return manualMode;
+    private static void beginTransferSpin() {
+        double startPos = currentPos;
+        setPosition(startPos + SpindexerPositions.fullRotation);
+        originalBallCount = getBallCount();
+        transferActive = true;
+        transferPending = false;
+        transferStartTime = timer.milliseconds();
     }
 
-    public static void stop() {
-        sorter.setPower(0.0);
-        manualMode = false;
-        resetPID();
+    public static void checkPendingTransfer() {
+        if (transferPending && isSettled()) {
+            beginTransferSpin();
+        }
     }
 
-    public static void setStart() {
-        // Move to starting position and synchronize internal state
-        targetPosition = startPos;
-        currentPort = 0;  // Assume start position is port 0
-        resetPID();
+    public static void manualRotate(double delta) {
+        if (transferActive || transferPending) return;
+        currentPos = Math.max(0.0, Math.min(1.0, currentPos + delta));
+        targetPos = currentPos;
+        servo1.setPosition(currentPos);
+        servo2.setPosition(1.0 - currentPos);
     }
 
-    public static void organizeFire(String [] ballSequence) {
-        int firePort = (currentPort+2)%3;
-        targetPosition -= (int)(stepTicks)/2;
-        for (int i = 0; i<3;i++) {
-            if (ballSequence[i].equals(ports[firePort])) {
-                Sorter.update();
-                //launch
+    public static boolean isTransferPending() { return transferPending; }
+
+    public static int handleTransfer() {
+        if (!transferActive) return 0;
+        double elapsed = timer.milliseconds() - transferStartTime;
+        if (TransferSettings.enableTransferTimeout && elapsed > TransferSettings.transferTimeoutMs) {
+            transferActive = false;
+            clearBalls();
+            return 2;
+        }
+        if (elapsed >= SpindexerDelays.transferDurationMs) {
+            transferActive = false;
+            if (ShootingPattern.enablePatternCycling && originalBallCount == 3) {
+                String t = currentPattern[0];
+                currentPattern[0] = currentPattern[1];
+                currentPattern[1] = currentPattern[2];
+                currentPattern[2] = t;
             }
-            else if (ballSequence[i].equals(ports[((firePort-1)%3+3)%3])) {
-                turn(1);
-                Sorter.update();
-                //launch
-            }
-            else if ((ballSequence[i].equals(ports[(firePort+1)%3]))) {
-                turn(-1);
-                Sorter.update();
-                //launch
-            }
-            else {
-                break;
+            clearBalls();
+            return 1;
+        }
+        return -1;
+    }
+
+    public static void updateTransferMotor(double manualPower) {
+        if (transferActive) {
+            transferMotor.setPower(TransferSettings.shootPower);
+        } else {
+            transferMotor.setPower(Math.max(-1.0, Math.min(1.0, manualPower)) * TransferSettings.manualPower);
+        }
+    }
+
+    public static void setPattern(String[] p) {
+        if (p.length == 3) {
+            currentPattern[0] = p[0];
+            currentPattern[1] = p[1];
+            currentPattern[2] = p[2];
+        }
+    }
+
+    public static double getActiveServoSpeed() {
+        return transferActive ? SpindexerDelays.shootServoSpeed : SpindexerDelays.intakeServoSpeed;
+    }
+
+    public static int getStep() { return currentPort; }
+    public static double getCurrentPos() { return currentPos; }
+    public static boolean isTransferActive() { return transferActive; }
+    public static String[] getBallSlots() { return ports; }
+    public static String[] getCurrentPattern() { return currentPattern; }
+    public static double getTransferMotorPower() { return transferMotor.getPower(); }
+    public static double getTransferTimeLeft() {
+        if (!transferActive) return 0;
+        return Math.max(0, SpindexerDelays.transferDurationMs - (timer.milliseconds() - transferStartTime));
+    }
+
+    public static String formatBallSlots() {
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < 3; i++) {
+            sb.append(ports[i] == null ? "empty" : "unknown".equals(ports[i]) ? "???" : ports[i]);
+            if (i < 2) sb.append(", ");
+        }
+        return sb.append("]").toString();
+    }
+
+    public static String formatShootingOrder() {
+        if (getBallCount() == 0) return "No balls";
+        StringBuilder sb = new StringBuilder();
+        boolean first = true;
+        for (int i = 0; i < 3; i++) {
+            if (ports[i] != null) {
+                if (!first) sb.append(" > ");
+                sb.append("unknown".equals(ports[i]) ? "???" : ports[i]);
+                first = false;
             }
         }
-        targetPosition += (int)(stepTicks)/2;
-        currentPort = 0;
-        Sorter.update();
+        return sb.toString();
     }
-    public static void fireAtWill() {
-        targetPosition -= (int)(stepTicks)/2;
-        turn(1);
-        //launch
-        // return back to original position and set currentPort to 0
+
+    public static void stopAll() {
+        transferMotor.setPower(0);
+        setPosition(SpindexerPositions.initPosition);
     }
+
+    // Legacy compatibility
+    public static int getPosition() { return 0; }
+    public static int getTargetPosition() { return 0; }
+    public static void clearPorts() { clearBalls(); }
+    public static String[] getPorts() { return ports; }
+    public static void turn(int turns) { if (turns > 0) advanceSpindexer(); else reverseSpindexer(); }
+    public static void updatePorts(String color) { ports[0] = color; }
+    public static boolean isBusy() { return !isSettled(); }
+    public static void enterShootingMode() { rotateForShooting(false); }
+    public static void exitShootingMode() { }
+    public static void setManualPower(double power) { }
+    public static void syncTarget() { }
+    public static boolean isManualMode() { return false; }
+    public static void update() { updateSlew(); }
+    public static void stop() { stopAll(); }
+    public static void setStart() { clearBalls(); }
 }

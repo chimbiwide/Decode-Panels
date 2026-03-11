@@ -84,6 +84,8 @@ public class ColorClass extends LinearOpMode {
         public static double colorTimeoutMs = 2000.0;
         // Pause intake briefly after ball detected (ms)
         public static double pauseOnDetectMs = 100;
+        // Delay (ms) between distance-sensor detection and spindexer advance
+        public static double detectDelayMs = 0;
     }
 
     // =========================================================
@@ -116,6 +118,10 @@ public class ColorClass extends LinearOpMode {
     // Color detection
     private boolean awaitingColorDetect = false;
     private double colorDetectStartTime = 0;
+
+    // Detect delay
+    private boolean ballDetectPending = false;
+    private double ballDetectPendingStart = 0;
 
     // Spindexer
     private int spindexerStep = -1;
@@ -213,8 +219,15 @@ public class ColorClass extends LinearOpMode {
             boolean ballNow = sensorsEnabled && detectBall();
             boolean ballAdded = false;
 
-            if (sensorsEnabled && intakeToggled && !awaitingColorDetect && intakeActive) {
+            if (sensorsEnabled && intakeToggled && !awaitingColorDetect && !ballDetectPending && intakeActive) {
                 if (ballNow && !ballDetectedLastLoop && detectedBalls < 3) {
+                    ballDetectPending = true;
+                    ballDetectPendingStart = nowMs;
+                }
+            }
+            if (ballDetectPending && !awaitingColorDetect && detectedBalls < 3) {
+                if ((nowMs - ballDetectPendingStart) >= IntakeConfig.detectDelayMs) {
+                    ballDetectPending = false;
                     awaitingColorDetect = true;
                     colorDetectStartTime = nowMs;
                 }
@@ -509,6 +522,7 @@ public class ColorClass extends LinearOpMode {
         detectedBalls = 0;
         ballDetectedLastLoop = false;
         awaitingColorDetect = false;
+        ballDetectPending = false;
         spindexerStep = 0;
         setSpindexerPosition(SpindexerConfig.slot1);
     }

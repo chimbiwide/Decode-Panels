@@ -1,147 +1,121 @@
 package org.firstinspires.ftc.teamcode.tools;
 
+import com.bylazar.configurables.annotations.Configurable;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
-import com.qualcomm.robotcore.hardware.DcMotorSimple;
 import com.qualcomm.robotcore.hardware.HardwareMap;
-import com.qualcomm.robotcore.util.ElapsedTime;
 
 public class Flywheel {
-    private static DcMotorEx wheel;
 
-    // PID gains
-    private static double kP = 0.0037;
-    private static double kI = 0.0;
-    private static double kD = 0.000008;
-    private static double kF = 0.00041;  // Feedforward gain
+    @Configurable
+    public static class FlywheelPID {
+        public static double kP = 0.02;
+        public static double kI = 0.005;
+        public static double kD = 0.0;
+        public static double kF = 0.00041;
+        public static double targetVelocity = 0;
+        public static double integralMax = 0.3;
+        public static double closeRangeVelocity = 1250;
+        public static double longRangeVelocity = 1450;
+    }
 
-    // PID state
-    private static double targetVelocity = 0;  // ticks per second
-    private static double integral = 0;
+    @Configurable
+    public static class FlywheelEquation {
+        public static double tyA = -34.21877;
+        public static double tyB = 1178.87689;
+        public static double txA = 1.0;
+        public static double txB = 2.0;
+        public static double txC = 1250.0;
+        public static double minVelocity = 1200;
+        public static double maxVelocity = 1600;
+        public static double roundTo = 5.0;
+    }
+
+    private static DcMotorEx motor;
+    private static double integralSum = 0;
     private static double lastError = 0;
-    private static ElapsedTime timer = new ElapsedTime();
-    private static double lastTime = 0;
-
-    // Anti-windup limit
-    private static double integralMax = 0.3;
+    private static boolean rumbled = false;
 
     public static void init(HardwareMap map) {
-        wheel = map.get(DcMotorEx.class, "shooter");
-        wheel.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
-        wheel.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
-        wheel.setDirection(DcMotorSimple.Direction.FORWARD);
-        targetVelocity = 0;
-        timer.reset();
-        lastTime = 0;
-        resetPID();
-    }
-
-    public static void setGains(double p, double i, double d, double f) {
-        kP = p;
-        kI = i;
-        kD = d;
-        kF = f;
-    }
-
-    public static void setTargetVelocity(double ticksPerSecond) {
-        if (targetVelocity != ticksPerSecond) {
-            resetPID();
-        }
-        targetVelocity = ticksPerSecond;
-    }
-
-    public static void update() {
-        double currentTime = timer.seconds();
-        double dt = currentTime - lastTime;
-        lastTime = currentTime;
-
-        if (dt <= 0 || dt > 0.5) {
-            return;  // Skip invalid time deltas
-        }
-
-        double currentVelocity = wheel.getVelocity();  // ticks per second
-        double error = targetVelocity - currentVelocity;
-
-        // Proportional
-        double pTerm = kP * error;
-
-        // Integral with anti-windup
-        integral += error * dt;
-        integral = Math.max(-integralMax, Math.min(integralMax, integral));
-        double iTerm = kI * integral;
-
-        // Derivative
-        double derivative = (error - lastError) / dt;
-        double dTerm = kD * derivative;
-        lastError = error;
-
-        // Feedforward
-        double fTerm = kF * targetVelocity;
-
-        // Calculate output
-        double output = pTerm + iTerm + dTerm + fTerm;
-        output = Math.max(-1.0, Math.min(1.0, output));
-
-        wheel.setPower(output);
-    }
-
-    public static void resetPID() {
-        integral = 0;
+        motor = map.get(DcMotorEx.class, "shooter");
+        motor.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
+        motor.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        motor.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
+        integralSum = 0;
         lastError = 0;
-        lastTime = timer.seconds();
+        rumbled = false;
     }
 
-    public static double getVelocity() {
-        return wheel.getVelocity();
+    public static void update(double dt) {
+        double velocity = motor.getVelocity();
+        double error = FlywheelPID.targetVelocity - velocity;
+        if (FlywheelPID.targetVelocity == 0) {
+            integralSum = 0;
+            lastError = 0;
+            motor.setPower(0);
+            rumbled = false;
+            return;
+        }
+        integralSum = clamp(integralSum + error * dt, -FlywheelPID.integralMax, FlywheelPID.integralMax);
+        double output = (FlywheelPID.kP * error)
+                + (FlywheelPID.kI * integralSum)
+                + (FlywheelPID.kD * (error - lastError) / dt)
+                + (FlywheelPID.kF * FlywheelPID.targetVelocity);
+        motor.setPower(clamp(output, -1.0, 1.0));
+        lastError = error;
     }
 
-    public static double getTargetVelocity() {
-        return targetVelocity;
-    }
-
-    public static double getError() {
-        return targetVelocity - wheel.getVelocity();
-    }
+    public static double getVelocity() { return motor.getVelocity(); }
+    public static double getError() { return FlywheelPID.targetVelocity - motor.getVelocity(); }
+    public static double getPower() { return motor.getPower(); }
 
     public static boolean isAtSpeed(double tolerance) {
-        return Math.abs(getError()) < tolerance;
+        return FlywheelPID.targetVelocity != 0 && Math.abs(getError()) < tolerance;
     }
 
-    public static void run(double power) {
-        targetVelocity = 0;
-        wheel.setPower(power);
+    public static boolean checkRumble(double tolerance) {
+        if (isAtSpeed(tolerance) && !rumbled) {
+            rumbled = true;
+            return true;
+        }
+        return false;
     }
+
+    public static void resetRumble() { rumbled = false; }
 
     public static void stop() {
-        targetVelocity = 0;
-        resetPID();
-        wheel.setPower(0);
+        FlywheelPID.targetVelocity = 0;
+        integralSum = 0;
+        lastError = 0;
+        motor.setPower(0);
     }
 
-    public static double calculateTargetVelocity(double Ty) {
-        //linear equation: -34.21877x + 1178.87689
-        return -34.21877 * Ty + 1178.87689;
+    public static double calculateFromTy(double ty) {
+        double raw = FlywheelEquation.tyA * ty + FlywheelEquation.tyB;
+        raw = clamp(raw, FlywheelEquation.minVelocity, FlywheelEquation.maxVelocity);
+        return Math.round(raw / FlywheelEquation.roundTo) * FlywheelEquation.roundTo;
     }
 
-    // TX-based velocity equation coefficients
-    public static double txEqA = 1.0;
-    public static double txEqB = 2.0;
-    public static double txEqC = 1250.0;
-    public static double txEqMinVelocity = 1200;
-    public static double txEqMaxVelocity = 1600;
-    public static double txEqRoundTo = 25.0;
+    public static double calculateFromTx(double tx) {
+        double raw = FlywheelEquation.txA * tx * tx + FlywheelEquation.txB * tx + FlywheelEquation.txC;
+        raw = clamp(raw, FlywheelEquation.minVelocity, FlywheelEquation.maxVelocity);
+        return Math.round(raw / FlywheelEquation.roundTo) * FlywheelEquation.roundTo;
+    }
 
-    // Preset velocities
+    // Legacy compatibility
     public static double closeRangeVelocity = 1250;
     public static double longRangeVelocity = 1450;
+    public static void update() { update(0.02); }
+    public static void setTargetVelocity(double v) { FlywheelPID.targetVelocity = v; }
+    public static void setTargetVelocity(int v) { FlywheelPID.targetVelocity = v; }
+    public static double calculateTargetVelocity(double ty) { return calculateFromTy(ty); }
+    public static void resetPID() { integralSum = 0; lastError = 0; }
+    public static void setGains(double p, double i, double d, double f) {
+        FlywheelPID.kP = p; FlywheelPID.kI = i; FlywheelPID.kD = d; FlywheelPID.kF = f;
+    }
+    public static void run(double power) { motor.setPower(power); }
 
-    /**
-     * Compute flywheel target velocity from Limelight tx using quadratic equation.
-     * Result is clamped to [txEqMinVelocity, txEqMaxVelocity] and rounded.
-     */
-    public static double calculateTargetVelocityFromTx(double tx) {
-        double raw = txEqA * tx * tx + txEqB * tx + txEqC;
-        raw = Math.max(txEqMinVelocity, Math.min(txEqMaxVelocity, raw));
-        return Math.round(raw / txEqRoundTo) * txEqRoundTo;
+    private static double clamp(double v, double min, double max) {
+        return Math.max(min, Math.min(max, v));
     }
 }
