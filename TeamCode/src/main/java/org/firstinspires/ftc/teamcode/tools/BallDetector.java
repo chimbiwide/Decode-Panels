@@ -19,7 +19,7 @@ public class BallDetector {
         public static boolean useCS2Distance = false;
         public static double cs2ThresholdMm = 8;
         public static double startupDelayMs = 2000;
-        public static double settleDelayMs = 150;
+        public static double analogSettleDelayMs = 150;
     }
 
     private static AnalogInput ranger;
@@ -37,6 +37,17 @@ public class BallDetector {
         if (BallDetection.useAnalogRanger) {
             triggered |= getRangerDistanceIn() <= BallDetection.analogThresholdIn;
         }
+        if (BallDetection.useCS1Distance && csDistance1 != null) {
+            triggered |= csDistance1.getDistance(DistanceUnit.MM) <= BallDetection.cs1ThresholdMm;
+        }
+        if (BallDetection.useCS2Distance && csDistance2 != null) {
+            triggered |= csDistance2.getDistance(DistanceUnit.MM) <= BallDetection.cs2ThresholdMm;
+        }
+        return triggered;
+    }
+
+    public static boolean isColorDistanceTriggered() {
+        boolean triggered = false;
         if (BallDetection.useCS1Distance && csDistance1 != null) {
             triggered |= csDistance1.getDistance(DistanceUnit.MM) <= BallDetection.cs1ThresholdMm;
         }

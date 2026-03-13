@@ -13,6 +13,7 @@ import org.firstinspires.ftc.teamcode.tools.Color;
 import org.firstinspires.ftc.teamcode.tools.Drive;
 import org.firstinspires.ftc.teamcode.tools.Flywheel;
 import org.firstinspires.ftc.teamcode.tools.Intake;
+import org.firstinspires.ftc.teamcode.tools.RGBDisplay;
 import org.firstinspires.ftc.teamcode.tools.Sorter;
 import org.firstinspires.ftc.teamcode.tools.Turret;
 
@@ -39,6 +40,13 @@ public class Red extends LinearOpMode {
     private double colorDetectStartTime = 0;
     private boolean manualSpinUsed = false;
     private boolean triggerSpindexerEnabled = false;
+    private double pendingSettleDelay = 0;
+
+    private enum JamState { IDLE, OUTTAKING }
+    private JamState jamState = JamState.IDLE;
+    private double jamActionStart = 0;
+    private boolean jamIntakeWasOn = false;
+    private boolean equationOverride = false;
 
     private boolean lastCrossG1, lastCrossG2;
     private boolean lastTriangleG1, lastTriangleG2;
@@ -59,6 +67,7 @@ public class Red extends LinearOpMode {
         Sorter.init(hardwareMap);
         Color.init(hardwareMap);
         Intake.init(hardwareMap);
+        RGBDisplay.init(hardwareMap);
 
         limelight = hardwareMap.get(Limelight3A.class, "limelight");
         limelight.pipelineSwitch(9);
@@ -80,12 +89,20 @@ public class Red extends LinearOpMode {
             double nowMs = timer.milliseconds();
 
             Drive.drive(-gamepad1.left_stick_y, gamepad1.left_stick_x, gamepad1.right_stick_x);
+            Sorter.setSortingMode(intakeMode == IntakeMode.SORTING);
             Sorter.updateSlew();
             Sorter.checkPendingTransfer();
             Flywheel.update(dt);
 
             LLResult result = limelight.getLatestResult();
             Double tx = (result != null && result.isValid()) ? result.getTx() : null;
+            if (equationOverride) {
+                boolean atPreset = Math.abs(Flywheel.getVelocity() - Flywheel.FlywheelPID.targetVelocity) <= Flywheel.FlywheelPID.blinkTolerance;
+                if (atPreset && result != null && result.isValid()) equationOverride = false;
+            }
+            if (Flywheel.FlywheelEquation.enableEquation && !equationOverride && result != null && result.isValid()) {
+                Flywheel.FlywheelPID.targetVelocity = Flywheel.calculateFromTy(result.getTy());
+            }
             boolean lb = gamepad1.left_bumper || gamepad2.left_bumper;
             boolean rb = gamepad1.right_bumper || gamepad2.right_bumper;
             Turret.update(dt, tx, lb, rb);
@@ -118,10 +135,15 @@ public class Red extends LinearOpMode {
             sensorsJustEnabled = sensorsEnabled && !wasSensorsEnabled;
             Color.setLEDs(sensorsEnabled && Color.ColorConfig.enableLEDs);
 
+            handleJam(nowMs);
             handleBallDetection(nowMs);
             handleIntakeControls(nowMs);
             handleShootingControls();
             handlePatternControls();
+            boolean blinking = Flywheel.FlywheelPID.targetVelocity > 0
+                    && !Flywheel.isAtSpeed(Flywheel.FlywheelPID.blinkTolerance)
+                    && (shootingMode || Sorter.getBallCount() == 3);
+            RGBDisplay.update(jamState != JamState.IDLE, blinking);
 
             if (Flywheel.checkRumble(50)) {
                 gamepad1.rumble(1.0, 1.0, 1000);
@@ -136,6 +158,26 @@ public class Red extends LinearOpMode {
         Sorter.stopAll();
         Drive.stop();
         limelight.stop();
+    }
+
+    private void handleJam(double nowMs) {
+        if (jamState == JamState.IDLE) {
+            if (Sorter.isJammed()) {
+                jamState = JamState.OUTTAKING;
+                jamActionStart = nowMs;
+                jamIntakeWasOn = Intake.isToggled();
+                Intake.setToggled(false);
+                ballDetectPending = false;
+                awaitingColorDetect = false;
+            }
+        } else if (jamState == JamState.OUTTAKING) {
+            if ((nowMs - jamActionStart) >= 1000) {
+                Sorter.removeBall();
+                manualSpinUsed = true;
+                if (jamIntakeWasOn) Intake.setToggled(true);
+                jamState = JamState.IDLE;
+            }
+        }
     }
 
     private void handleBallDetection(double nowMs) {
@@ -154,11 +196,12 @@ public class Red extends LinearOpMode {
             if (ballNow && !ballDetectedLastLoop && Sorter.getBallCount() < 3) {
                 ballDetectPending = true;
                 ballDetectPendingStart = nowMs;
+                pendingSettleDelay = BallDetector.isColorDistanceTriggered() ? 0 : BallDetector.BallDetection.analogSettleDelayMs;
             }
         }
 
         if (ballDetectPending && !awaitingColorDetect && Sorter.getBallCount() < 3) {
-            if ((nowMs - ballDetectPendingStart) >= BallDetector.BallDetection.settleDelayMs) {
+            if ((nowMs - ballDetectPendingStart) >= pendingSettleDelay) {
                 ballDetectPending = false;
                 if (intakeMode == IntakeMode.NORMAL) {
                     Sorter.commitBall("unknown");
@@ -190,6 +233,7 @@ public class Red extends LinearOpMode {
         if (ballAdded) {
             Intake.triggerPause(nowMs);
             if (Sorter.getBallCount() == 3) {
+                Intake.setToggled(false);
                 gamepad1.rumble(0.5, 0.5, 300);
                 gamepad2.rumble(0.5, 0.5, 300);
             }
@@ -210,7 +254,7 @@ public class Red extends LinearOpMode {
         if (g2Cross && !lastCrossG2) Intake.toggle();
         lastCrossG2 = g2Cross;
 
-        Intake.update(nowMs, gamepad1.dpad_right);
+        Intake.update(nowMs, gamepad1.dpad_right || jamState == JamState.OUTTAKING);
 
         boolean g1Sq = gamepad1.square;
         if (g1Sq && !lastSquareG1 && !Sorter.isTransferActive()) {
@@ -295,6 +339,7 @@ public class Red extends LinearOpMode {
         if (g1Share && !lastShareG1) {
             Flywheel.FlywheelPID.targetVelocity = Flywheel.FlywheelPID.closeRangeVelocity;
             Flywheel.resetRumble();
+            equationOverride = true;
         }
         lastShareG1 = g1Share;
 
@@ -302,6 +347,7 @@ public class Red extends LinearOpMode {
         if (g1Options && !lastOptionsG1) {
             Flywheel.FlywheelPID.targetVelocity = Flywheel.FlywheelPID.longRangeVelocity;
             Flywheel.resetRumble();
+            equationOverride = true;
         }
         lastOptionsG1 = g1Options;
 
@@ -309,6 +355,7 @@ public class Red extends LinearOpMode {
         if (g2Share && !lastShareG2) {
             Flywheel.FlywheelPID.targetVelocity = Flywheel.FlywheelPID.closeRangeVelocity;
             Flywheel.resetRumble();
+            equationOverride = true;
         }
         lastShareG2 = g2Share;
 
@@ -316,6 +363,7 @@ public class Red extends LinearOpMode {
         if (g2Options && !lastOptionsG2) {
             Flywheel.FlywheelPID.targetVelocity = Flywheel.FlywheelPID.longRangeVelocity;
             Flywheel.resetRumble();
+            equationOverride = true;
         }
         lastOptionsG2 = g2Options;
 
@@ -363,6 +411,14 @@ public class Red extends LinearOpMode {
                 gamepad2.rumble(0.5, 0.5, 200);
             }
             lastDpadRightG2 = g2Right;
+        } else {
+            boolean g2Right = gamepad2.dpad_right;
+            if (g2Right && !lastDpadRightG2) {
+                Flywheel.FlywheelEquation.enableEquation = !Flywheel.FlywheelEquation.enableEquation;
+                Flywheel.resetRumble();
+                gamepad2.rumble(Flywheel.FlywheelEquation.enableEquation ? 0.8 : 0.3, Flywheel.FlywheelEquation.enableEquation ? 0.8 : 0.3, 200);
+            }
+            lastDpadRightG2 = g2Right;
         }
     }
 
@@ -402,7 +458,9 @@ public class Red extends LinearOpMode {
 
         panelsTelemetry.addData("=== SERVO SPEED ===", "");
         panelsTelemetry.addData("Intake Speed", Sorter.SpindexerDelays.intakeServoSpeed);
-        panelsTelemetry.addData("Shoot Speed", Sorter.SpindexerDelays.shootServoSpeed);
+        panelsTelemetry.addData("Sorting Speed", Sorter.SpindexerDelays.sortingServoSpeed);
+        panelsTelemetry.addData("Shoot Hi-Vel Speed (>=" + (int) Sorter.SpindexerDelays.shootVelocityThreshold + ")", Sorter.SpindexerDelays.shootHighVelSpeed);
+        panelsTelemetry.addData("Shoot Lo-Vel Speed (<" + (int) Sorter.SpindexerDelays.shootVelocityThreshold + ")", Sorter.SpindexerDelays.shootLowVelSpeed);
         panelsTelemetry.addData("Active", String.format("%.2f (%s)",
                 Sorter.getActiveServoSpeed(), Sorter.isTransferActive() ? "SHOOTING" : "INTAKE"));
         panelsTelemetry.addData("", "");
@@ -447,7 +505,7 @@ public class Red extends LinearOpMode {
                     BallDetector.getCS2DistanceMm() <= BallDetector.BallDetection.cs2ThresholdMm ? "BALL" : "clear"));
         }
         panelsTelemetry.addData("Ball Detected", (sensorsEnabled && BallDetector.detectBall()) ? "YES" : "NO");
-        panelsTelemetry.addData("Settle Delay", BallDetector.BallDetection.settleDelayMs + "ms");
+        panelsTelemetry.addData("Analog Settle Delay", BallDetector.BallDetection.analogSettleDelayMs + "ms  (color dist sensor = 0ms)");
         panelsTelemetry.addData("Startup Delay", BallDetector.BallDetection.startupDelayMs + "ms");
         panelsTelemetry.addData("", "");
 
@@ -488,6 +546,9 @@ public class Red extends LinearOpMode {
         panelsTelemetry.addData("", "");
 
         panelsTelemetry.addData("=== FLYWHEEL ===", "");
+        panelsTelemetry.addData("Equation", Flywheel.FlywheelEquation.enableEquation ? "ON (G2 dpad_right to off)" : "OFF (G2 dpad_right to on)");
+        panelsTelemetry.addData("Eq tyA", Flywheel.FlywheelEquation.tyA);
+        panelsTelemetry.addData("Eq tyB", Flywheel.FlywheelEquation.tyB);
         panelsTelemetry.addData("Target", String.format("%.1f tks/s", Flywheel.FlywheelPID.targetVelocity));
         panelsTelemetry.addData("Actual", String.format("%.1f tks/s", Flywheel.getVelocity()));
         panelsTelemetry.addData("Error", String.format("%.1f", Flywheel.getError()));

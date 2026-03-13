@@ -17,18 +17,17 @@ public class Flywheel {
         public static double integralMax = 0.3;
         public static double closeRangeVelocity = 1250;
         public static double longRangeVelocity = 1450;
+        public static double blinkTolerance = 50.0;
     }
 
     @Configurable
     public static class FlywheelEquation {
-        public static double tyA = -34.21877;
-        public static double tyB = 1178.87689;
-        public static double txA = 1.0;
-        public static double txB = 2.0;
-        public static double txC = 1250.0;
+        public static double tyA = -27.44147;
+        public static double tyB = 1732.48144;
         public static double minVelocity = 1200;
         public static double maxVelocity = 1600;
         public static double roundTo = 5.0;
+        public static boolean enableEquation = true;
     }
 
     private static DcMotorEx motor;
@@ -92,12 +91,6 @@ public class Flywheel {
 
     public static double calculateFromTy(double ty) {
         double raw = FlywheelEquation.tyA * ty + FlywheelEquation.tyB;
-        raw = clamp(raw, FlywheelEquation.minVelocity, FlywheelEquation.maxVelocity);
-        return Math.round(raw / FlywheelEquation.roundTo) * FlywheelEquation.roundTo;
-    }
-
-    public static double calculateFromTx(double tx) {
-        double raw = FlywheelEquation.txA * tx * tx + FlywheelEquation.txB * tx + FlywheelEquation.txC;
         raw = clamp(raw, FlywheelEquation.minVelocity, FlywheelEquation.maxVelocity);
         return Math.round(raw / FlywheelEquation.roundTo) * FlywheelEquation.roundTo;
     }

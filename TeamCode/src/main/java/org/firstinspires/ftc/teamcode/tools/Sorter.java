@@ -23,12 +23,14 @@ public class Sorter {
     public static class SpindexerDelays {
         public static double transferDurationMs = 1500;
         public static double settleTimeMs = 200;
-        public static double moveWaitMs = 300;
         public static double intakeServoSpeed = 0.5;
-        public static double shootServoSpeed = 0.9;
+        public static double sortingServoSpeed = 0.5;
+        public static double shootHighVelSpeed = 0.5;
+        public static double shootLowVelSpeed = 0.9;
+        public static double shootVelocityThreshold = 1375.0;
         public static double pauseOnDetectMs = 300;
-        public static double shootDelayMs = 0;
-        public static double manualBumperSpeed = 0.3;
+        public static double jamTimeoutMs = 1500;
+        public static double jamTolerance = 0.05;
     }
 
     @Configurable
@@ -60,6 +62,7 @@ public class Sorter {
     private static double moveTime = 0;
     private static boolean sensorsGated = true;
 
+    private static boolean sortingModeActive = false;
     private static boolean transferActive = false;
     private static boolean transferPending = false;
     private static double transferStartTime = 0;
@@ -106,7 +109,12 @@ public class Sorter {
     public static void updateSlew() {
         double elapsed = slewTimer.seconds();
         slewTimer.reset();
-        double speed = transferActive ? SpindexerDelays.shootServoSpeed : SpindexerDelays.intakeServoSpeed;
+        double speed = sortingModeActive ? SpindexerDelays.sortingServoSpeed
+                : transferActive
+                    ? (Flywheel.getVelocity() >= SpindexerDelays.shootVelocityThreshold
+                            ? SpindexerDelays.shootHighVelSpeed
+                            : SpindexerDelays.shootLowVelSpeed)
+                    : SpindexerDelays.intakeServoSpeed;
         double maxStep = speed * elapsed;
         double error = targetPos - currentPos;
         if (Math.abs(error) <= maxStep) {
@@ -121,6 +129,14 @@ public class Sorter {
     public static boolean isSettled() {
         return (timer.milliseconds() - moveTime) >= SpindexerDelays.settleTimeMs
                 && Math.abs(currentPos - targetPos) <= 0.02;
+    }
+
+    public static boolean isJammed() {
+        if (transferActive || transferPending) return false;
+        if (moveTime == 0) return false;
+        double elapsed = timer.milliseconds() - moveTime;
+        return elapsed > SpindexerDelays.jamTimeoutMs
+                && Math.abs(currentPos - targetPos) > SpindexerDelays.jamTolerance;
     }
 
     public static boolean isSensorsGated() { return sensorsGated; }
@@ -358,8 +374,16 @@ public class Sorter {
         }
     }
 
+    public static void setSortingMode(boolean sorting) { sortingModeActive = sorting; }
+
     public static double getActiveServoSpeed() {
-        return transferActive ? SpindexerDelays.shootServoSpeed : SpindexerDelays.intakeServoSpeed;
+        if (sortingModeActive) return SpindexerDelays.sortingServoSpeed;
+        if (transferActive) {
+            return Flywheel.getVelocity() >= SpindexerDelays.shootVelocityThreshold
+                    ? SpindexerDelays.shootHighVelSpeed
+                    : SpindexerDelays.shootLowVelSpeed;
+        }
+        return SpindexerDelays.intakeServoSpeed;
     }
 
     public static int getStep() { return currentPort; }
