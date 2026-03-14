@@ -14,11 +14,10 @@ public class BallDetector {
     public static class BallDetection {
         public static boolean useAnalogRanger = true;
         public static double analogThresholdIn = 3.0;
-        public static boolean useCS1Distance = false;
-        public static double cs1ThresholdMm = 8;
-        public static boolean useCS2Distance = false;
-        public static double cs2ThresholdMm = 8;
-        public static double startupDelayMs = 2000;
+        public static boolean useColorSensorDistance = false;
+        public static boolean useColorSensors = true;
+        public static double csThresholdMm = 8;
+        public static double startupDelayMs = 3000;
         public static double analogSettleDelayMs = 150;
     }
 
@@ -37,23 +36,18 @@ public class BallDetector {
         if (BallDetection.useAnalogRanger) {
             triggered |= getRangerDistanceIn() <= BallDetection.analogThresholdIn;
         }
-        if (BallDetection.useCS1Distance && csDistance1 != null) {
-            triggered |= csDistance1.getDistance(DistanceUnit.MM) <= BallDetection.cs1ThresholdMm;
-        }
-        if (BallDetection.useCS2Distance && csDistance2 != null) {
-            triggered |= csDistance2.getDistance(DistanceUnit.MM) <= BallDetection.cs2ThresholdMm;
+        if (BallDetection.useColorSensorDistance) {
+            if (csDistance1 != null) triggered |= csDistance1.getDistance(DistanceUnit.MM) <= BallDetection.csThresholdMm;
+            if (csDistance2 != null) triggered |= csDistance2.getDistance(DistanceUnit.MM) <= BallDetection.csThresholdMm;
         }
         return triggered;
     }
 
     public static boolean isColorDistanceTriggered() {
+        if (!BallDetection.useColorSensorDistance) return false;
         boolean triggered = false;
-        if (BallDetection.useCS1Distance && csDistance1 != null) {
-            triggered |= csDistance1.getDistance(DistanceUnit.MM) <= BallDetection.cs1ThresholdMm;
-        }
-        if (BallDetection.useCS2Distance && csDistance2 != null) {
-            triggered |= csDistance2.getDistance(DistanceUnit.MM) <= BallDetection.cs2ThresholdMm;
-        }
+        if (csDistance1 != null) triggered |= csDistance1.getDistance(DistanceUnit.MM) <= BallDetection.csThresholdMm;
+        if (csDistance2 != null) triggered |= csDistance2.getDistance(DistanceUnit.MM) <= BallDetection.csThresholdMm;
         return triggered;
     }
 

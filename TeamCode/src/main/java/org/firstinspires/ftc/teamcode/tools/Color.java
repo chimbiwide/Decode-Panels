@@ -11,35 +11,17 @@ public class Color {
     @Configurable
     public static class ColorSensor1 {
         public static double gain = 24;
-        public static double greenGMin = 0.35;
-        public static double greenGMax = 1.0;
-        public static double greenRMin = 0.0;
-        public static double greenRMax = 0.33;
-        public static double greenBMin = 0.0;
-        public static double greenBMax = 0.33;
-        public static double purpleRMin = 0.30;
-        public static double purpleRMax = 1.0;
-        public static double purpleBMin = 0.30;
-        public static double purpleBMax = 1.0;
-        public static double purpleGMin = 0.0;
-        public static double purpleGMax = 0.33;
     }
 
     @Configurable
     public static class ColorSensor2 {
         public static double gain = 24;
-        public static double greenGMin = 0.35;
-        public static double greenGMax = 1.0;
-        public static double greenRMin = 0.0;
-        public static double greenRMax = 0.33;
-        public static double greenBMin = 0.0;
-        public static double greenBMax = 0.33;
-        public static double purpleRMin = 0.30;
-        public static double purpleRMax = 1.0;
-        public static double purpleBMin = 0.30;
-        public static double purpleBMax = 1.0;
-        public static double purpleGMin = 0.0;
-        public static double purpleGMax = 0.33;
+    }
+
+    @Configurable
+    public static class ColorThresholds {
+        public static double greenThreshold = 0.95;
+        public static double purpleThreshold = 0.95;
     }
 
     @Configurable
@@ -77,10 +59,10 @@ public class Color {
         float a2 = Math.max(raw2.alpha, 1e-6f);
         lastCS1 = new double[]{raw1.red / a1, raw1.green / a1, raw1.blue / a1, raw1.alpha};
         lastCS2 = new double[]{raw2.red / a2, raw2.green / a2, raw2.blue / a2, raw2.alpha};
-        lastCS1Green = ColorConfig.enableSensor1 && cs1IsGreen(lastCS1[0], lastCS1[1], lastCS1[2]);
-        lastCS1Purple = ColorConfig.enableSensor1 && cs1IsPurple(lastCS1[0], lastCS1[1], lastCS1[2]);
-        lastCS2Green = ColorConfig.enableSensor2 && cs2IsGreen(lastCS2[0], lastCS2[1], lastCS2[2]);
-        lastCS2Purple = ColorConfig.enableSensor2 && cs2IsPurple(lastCS2[0], lastCS2[1], lastCS2[2]);
+        lastCS1Green = ColorConfig.enableSensor1 && isGreen(lastCS1[0], lastCS1[1], lastCS1[2]);
+        lastCS1Purple = ColorConfig.enableSensor1 && isPurple(lastCS1[0], lastCS1[1], lastCS1[2]);
+        lastCS2Green = ColorConfig.enableSensor2 && isGreen(lastCS2[0], lastCS2[1], lastCS2[2]);
+        lastCS2Purple = ColorConfig.enableSensor2 && isPurple(lastCS2[0], lastCS2[1], lastCS2[2]);
     }
 
     public static String detectBallColor() {
@@ -99,28 +81,12 @@ public class Color {
         if (sensor2 instanceof SwitchableLight) ((SwitchableLight) sensor2).enableLight(on);
     }
 
-    private static boolean cs1IsGreen(double r, double g, double b) {
-        return g >= ColorSensor1.greenGMin && g <= ColorSensor1.greenGMax
-                && r >= ColorSensor1.greenRMin && r <= ColorSensor1.greenRMax
-                && b >= ColorSensor1.greenBMin && b <= ColorSensor1.greenBMax;
+    private static boolean isGreen(double r, double g, double b) {
+        return g >= ColorThresholds.greenThreshold;
     }
 
-    private static boolean cs1IsPurple(double r, double g, double b) {
-        return r >= ColorSensor1.purpleRMin && r <= ColorSensor1.purpleRMax
-                && b >= ColorSensor1.purpleBMin && b <= ColorSensor1.purpleBMax
-                && g >= ColorSensor1.purpleGMin && g <= ColorSensor1.purpleGMax;
-    }
-
-    private static boolean cs2IsGreen(double r, double g, double b) {
-        return g >= ColorSensor2.greenGMin && g <= ColorSensor2.greenGMax
-                && r >= ColorSensor2.greenRMin && r <= ColorSensor2.greenRMax
-                && b >= ColorSensor2.greenBMin && b <= ColorSensor2.greenBMax;
-    }
-
-    private static boolean cs2IsPurple(double r, double g, double b) {
-        return r >= ColorSensor2.purpleRMin && r <= ColorSensor2.purpleRMax
-                && b >= ColorSensor2.purpleBMin && b <= ColorSensor2.purpleBMax
-                && g >= ColorSensor2.purpleGMin && g <= ColorSensor2.purpleGMax;
+    private static boolean isPurple(double r, double g, double b) {
+        return b >= ColorThresholds.purpleThreshold;
     }
 
     public static double[] getCS1() { return lastCS1; }

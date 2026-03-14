@@ -107,10 +107,14 @@ public class Blue extends LinearOpMode {
             boolean rb = gamepad1.right_bumper || gamepad2.right_bumper;
             Turret.update(dt, tx, lb, rb);
 
-            double g1TriggerPower = 0;
-            if (gamepad1.right_trigger > 0.1) g1TriggerPower += gamepad1.right_trigger;
-            if (gamepad1.left_trigger > 0.1) g1TriggerPower -= gamepad1.left_trigger;
-            Sorter.updateTransferMotor(g1TriggerPower);
+            double g1ManualServo = 0;
+            if (gamepad1.right_trigger > 0.05) g1ManualServo += gamepad1.right_trigger * Sorter.SpindexerDelays.manualTriggerSpeed;
+            if (gamepad1.left_trigger > 0.05) g1ManualServo -= gamepad1.left_trigger * Sorter.SpindexerDelays.manualTriggerSpeed;
+            if (g1ManualServo != 0) {
+                Sorter.manualRotate(g1ManualServo);
+                manualSpinUsed = true;
+            }
+            Sorter.updateTransferMotor(0);
 
             if (triggerSpindexerEnabled) {
                 double g2ManualServo = 0;
@@ -140,10 +144,7 @@ public class Blue extends LinearOpMode {
             handleIntakeControls(nowMs);
             handleShootingControls();
             handlePatternControls();
-            boolean blinking = Flywheel.FlywheelPID.targetVelocity > 0
-                    && !Flywheel.isAtSpeed(Flywheel.FlywheelPID.blinkTolerance)
-                    && (shootingMode || Sorter.getBallCount() == 3);
-            RGBDisplay.update(jamState != JamState.IDLE, blinking);
+            RGBDisplay.update(intakeMode == IntakeMode.SORTING);
 
             if (Flywheel.checkRumble(50)) {
                 gamepad1.rumble(1.0, 1.0, 1000);
@@ -456,6 +457,30 @@ public class Blue extends LinearOpMode {
         double[] cs1 = Color.getCS1();
         double[] cs2 = Color.getCS2();
 
+        panelsTelemetry.addData("=== COLOR SENSOR ONE ===", Color.ColorConfig.enableSensor1 ? "ENABLED" : "DISABLED");
+        panelsTelemetry.addData("CS1 Gain", Color.ColorSensor1.gain);
+        panelsTelemetry.addData("CS1 Alpha", String.format("%.4f", cs1[3]));
+        panelsTelemetry.addData("CS1 R / G / B", String.format("%.4f  /  %.4f  /  %.4f", cs1[0], cs1[1], cs1[2]));
+        panelsTelemetry.addData("CS1 Green", String.format("%.4f  thresh=%.3f  %s",
+                cs1[1], Color.ColorThresholds.greenThreshold, cs1[1] >= Color.ColorThresholds.greenThreshold ? "-> GREEN" : ""));
+        panelsTelemetry.addData("CS1 Blue", String.format("%.4f  thresh=%.3f  %s",
+                cs1[2], Color.ColorThresholds.purpleThreshold, cs1[2] >= Color.ColorThresholds.purpleThreshold ? "-> PURPLE" : ""));
+        panelsTelemetry.addData("CS1 Result", Color.isCS1Green() ? "GREEN" : Color.isCS1Purple() ? "PURPLE" : "none");
+        panelsTelemetry.addData("", "");
+
+        panelsTelemetry.addData("=== COLOR SENSOR TWO ===", Color.ColorConfig.enableSensor2 ? "ENABLED" : "DISABLED");
+        panelsTelemetry.addData("CS2 Gain", Color.ColorSensor2.gain);
+        panelsTelemetry.addData("CS2 Alpha", String.format("%.4f", cs2[3]));
+        panelsTelemetry.addData("CS2 R / G / B", String.format("%.4f  /  %.4f  /  %.4f", cs2[0], cs2[1], cs2[2]));
+        panelsTelemetry.addData("CS2 Green", String.format("%.4f  thresh=%.3f  %s",
+                cs2[1], Color.ColorThresholds.greenThreshold, cs2[1] >= Color.ColorThresholds.greenThreshold ? "-> GREEN" : ""));
+        panelsTelemetry.addData("CS2 Blue", String.format("%.4f  thresh=%.3f  %s",
+                cs2[2], Color.ColorThresholds.purpleThreshold, cs2[2] >= Color.ColorThresholds.purpleThreshold ? "-> PURPLE" : ""));
+        panelsTelemetry.addData("CS2 Result", Color.isCS2Green() ? "GREEN" : Color.isCS2Purple() ? "PURPLE" : "none");
+        panelsTelemetry.addData("Last Color Detected", Color.getLastDetected() != null ? Color.getLastDetected().toUpperCase() : "NONE");
+        panelsTelemetry.addData("Color Timeout", Color.ColorConfig.colorTimeoutMs + "ms");
+        panelsTelemetry.addData("", "");
+
         panelsTelemetry.addData("=== SERVO SPEED ===", "");
         panelsTelemetry.addData("Intake Speed", Sorter.SpindexerDelays.intakeServoSpeed);
         panelsTelemetry.addData("Sorting Speed", Sorter.SpindexerDelays.sortingServoSpeed);
@@ -492,57 +517,19 @@ public class Blue extends LinearOpMode {
                 BallDetector.getRangerDistanceIn(), BallDetector.BallDetection.analogThresholdIn,
                 BallDetector.getRangerDistanceIn() <= BallDetector.BallDetection.analogThresholdIn ? "BALL" : "clear"));
         panelsTelemetry.addData("Ranger Voltage", String.format("%.4fV", BallDetector.getRangerVoltage()));
-        panelsTelemetry.addData("Color Sensor 1 Distance", BallDetector.BallDetection.useCS1Distance ? "ENABLED" : "DISABLED");
-        if (BallDetector.hasCS1Distance()) {
-            panelsTelemetry.addData("Color Sensor 1 Distance (mm)", String.format("%.1f  thresh=%.1f  %s",
-                    BallDetector.getCS1DistanceMm(), BallDetector.BallDetection.cs1ThresholdMm,
-                    BallDetector.getCS1DistanceMm() <= BallDetector.BallDetection.cs1ThresholdMm ? "BALL" : "clear"));
+        panelsTelemetry.addData("Color Sensor Distance", BallDetector.BallDetection.useColorSensorDistance ? "ENABLED" : "DISABLED");
+        if (BallDetector.BallDetection.useColorSensorDistance) {
+            if (BallDetector.hasCS1Distance()) panelsTelemetry.addData("CS1 Distance (mm)", String.format("%.1f  thresh=%.1f  %s",
+                    BallDetector.getCS1DistanceMm(), BallDetector.BallDetection.csThresholdMm,
+                    BallDetector.getCS1DistanceMm() <= BallDetector.BallDetection.csThresholdMm ? "BALL" : "clear"));
+            if (BallDetector.hasCS2Distance()) panelsTelemetry.addData("CS2 Distance (mm)", String.format("%.1f  thresh=%.1f  %s",
+                    BallDetector.getCS2DistanceMm(), BallDetector.BallDetection.csThresholdMm,
+                    BallDetector.getCS2DistanceMm() <= BallDetector.BallDetection.csThresholdMm ? "BALL" : "clear"));
         }
-        panelsTelemetry.addData("Color Sensor 2 Distance", BallDetector.BallDetection.useCS2Distance ? "ENABLED" : "DISABLED");
-        if (BallDetector.hasCS2Distance()) {
-            panelsTelemetry.addData("Color Sensor 2 Distance (mm)", String.format("%.1f  thresh=%.1f  %s",
-                    BallDetector.getCS2DistanceMm(), BallDetector.BallDetection.cs2ThresholdMm,
-                    BallDetector.getCS2DistanceMm() <= BallDetector.BallDetection.cs2ThresholdMm ? "BALL" : "clear"));
-        }
+        panelsTelemetry.addData("Color Sensors", BallDetector.BallDetection.useColorSensors ? "ENABLED" : "DISABLED");
         panelsTelemetry.addData("Ball Detected", (sensorsEnabled && BallDetector.detectBall()) ? "YES" : "NO");
         panelsTelemetry.addData("Analog Settle Delay", BallDetector.BallDetection.analogSettleDelayMs + "ms  (color dist sensor = 0ms)");
         panelsTelemetry.addData("Startup Delay", BallDetector.BallDetection.startupDelayMs + "ms");
-        panelsTelemetry.addData("", "");
-
-        panelsTelemetry.addData("=== COLOR SENSOR ONE ===", Color.ColorConfig.enableSensor1 ? "ENABLED" : "DISABLED");
-        panelsTelemetry.addData("Color Sensor 1 Gain", Color.ColorSensor1.gain);
-        panelsTelemetry.addData("Color Sensor 1 Alpha", String.format("%.4f", cs1[3]));
-        panelsTelemetry.addData("Color Sensor 1 Red", String.format("%.4f", cs1[0]));
-        panelsTelemetry.addData("Color Sensor 1 Green", String.format("%.4f", cs1[1]));
-        panelsTelemetry.addData("Color Sensor 1 Blue", String.format("%.4f", cs1[2]));
-        panelsTelemetry.addData("Color Sensor 1 Green Thresh", String.format("R[%.2f-%.2f] G[%.2f-%.2f] B[%.2f-%.2f]",
-                Color.ColorSensor1.greenRMin, Color.ColorSensor1.greenRMax,
-                Color.ColorSensor1.greenGMin, Color.ColorSensor1.greenGMax,
-                Color.ColorSensor1.greenBMin, Color.ColorSensor1.greenBMax));
-        panelsTelemetry.addData("Color Sensor 1 Purple Thresh", String.format("R[%.2f-%.2f] G[%.2f-%.2f] B[%.2f-%.2f]",
-                Color.ColorSensor1.purpleRMin, Color.ColorSensor1.purpleRMax,
-                Color.ColorSensor1.purpleGMin, Color.ColorSensor1.purpleGMax,
-                Color.ColorSensor1.purpleBMin, Color.ColorSensor1.purpleBMax));
-        panelsTelemetry.addData("Color Sensor 1 Result", Color.isCS1Green() ? "GREEN" : Color.isCS1Purple() ? "PURPLE" : "none");
-        panelsTelemetry.addData("", "");
-
-        panelsTelemetry.addData("=== COLOR SENSOR TWO ===", Color.ColorConfig.enableSensor2 ? "ENABLED" : "DISABLED");
-        panelsTelemetry.addData("Color Sensor 2 Gain", Color.ColorSensor2.gain);
-        panelsTelemetry.addData("Color Sensor 2 Alpha", String.format("%.4f", cs2[3]));
-        panelsTelemetry.addData("Color Sensor 2 Red", String.format("%.4f", cs2[0]));
-        panelsTelemetry.addData("Color Sensor 2 Green", String.format("%.4f", cs2[1]));
-        panelsTelemetry.addData("Color Sensor 2 Blue", String.format("%.4f", cs2[2]));
-        panelsTelemetry.addData("Color Sensor 2 Green Thresh", String.format("R[%.2f-%.2f] G[%.2f-%.2f] B[%.2f-%.2f]",
-                Color.ColorSensor2.greenRMin, Color.ColorSensor2.greenRMax,
-                Color.ColorSensor2.greenGMin, Color.ColorSensor2.greenGMax,
-                Color.ColorSensor2.greenBMin, Color.ColorSensor2.greenBMax));
-        panelsTelemetry.addData("Color Sensor 2 Purple Thresh", String.format("R[%.2f-%.2f] G[%.2f-%.2f] B[%.2f-%.2f]",
-                Color.ColorSensor2.purpleRMin, Color.ColorSensor2.purpleRMax,
-                Color.ColorSensor2.purpleGMin, Color.ColorSensor2.purpleGMax,
-                Color.ColorSensor2.purpleBMin, Color.ColorSensor2.purpleBMax));
-        panelsTelemetry.addData("Color Sensor 2 Result", Color.isCS2Green() ? "GREEN" : Color.isCS2Purple() ? "PURPLE" : "none");
-        panelsTelemetry.addData("Last Color Detected", Color.getLastDetected() != null ? Color.getLastDetected().toUpperCase() : "NONE");
-        panelsTelemetry.addData("Color Timeout", Color.ColorConfig.colorTimeoutMs + "ms");
         panelsTelemetry.addData("", "");
 
         panelsTelemetry.addData("=== FLYWHEEL ===", "");

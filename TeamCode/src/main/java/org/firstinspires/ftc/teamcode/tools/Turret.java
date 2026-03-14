@@ -10,7 +10,7 @@ public class Turret {
 
     @Configurable
     public static class TurretTracking {
-        public static double kP = 0.02;
+        public static double kP = 0.013;
         public static double kI = 0.0001;
         public static double kD = 0.0008;
         public static double integralMax = 0.3;

@@ -31,6 +31,7 @@ public class Sorter {
         public static double pauseOnDetectMs = 300;
         public static double jamTimeoutMs = 1500;
         public static double jamTolerance = 0.05;
+        public static double manualTriggerSpeed = 0.003;
     }
 
     @Configurable
