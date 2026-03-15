@@ -17,7 +17,7 @@ public class BallDetector {
         public static boolean useColorSensorDistance = false;
         public static boolean useColorSensors = true;
         public static double csThresholdMm = 8;
-        public static double startupDelayMs = 2000;
+        public static double startupDelayMs = 3000;
         public static double analogSettleDelayMs = 150;
     }
 
