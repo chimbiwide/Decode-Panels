@@ -23,15 +23,15 @@ public class Sorter {
     public static class SpindexerDelays {
         public static double transferDurationMs = 1500;
         public static double settleTimeMs = 200;
-        public static double intakeServoSpeed = 0.5;
+        public static double intakeServoSpeed = 0.7;
         public static double sortingServoSpeed = 0.5;
-        public static double shootHighVelSpeed = 0.5;
+        public static double shootHighVelSpeed = 0.45;
         public static double shootLowVelSpeed = 0.9;
         public static double shootVelocityThreshold = 1375.0;
         public static double pauseOnDetectMs = 300;
-        public static double jamTimeoutMs = 1500;
+        public static double jamTimeoutMs = 1000;
         public static double jamTolerance = 0.05;
-        public static double manualTriggerSpeed = 0.003;
+        public static double manualTriggerSpeed = 0.04;
     }
 
     @Configurable
@@ -207,7 +207,7 @@ public class Sorter {
 
     public static void manualAddBall() {
         if (getBallCount() < 3) {
-            ports[0] = "unknown";
+            ports[0] = "purple";
             advanceSpindexer();
         } else {
             advanceSpindexer();
@@ -251,18 +251,32 @@ public class Sorter {
         int green = 0, purple = 0;
         for (String p : ports) {
             if (p != null) {
-                if (p.equals("green")) purple++;
-                else green++;
+                if (p.equals("green")) green++;
+                else purple++;
             }
         }
         return green == 1 && purple == 2;
     }
 
-    private static int getGreenBall() {
-        for (int i = 0; i < ports.length; i++) {
-            if (ports[i] != null && ports[i].equals("green")) return i;
+    private static String[] simulateShuffle(String[] currentPorts, int turns) {
+        String[] sim = new String[3];
+        for (int i = 0; i < 3; i++) {
+            int index = ((i - turns) % 3 + 3) % 3;
+            sim[i] = currentPorts[index];
         }
-        return -1;
+        return sim;
+    }
+
+    private static boolean matchesPattern(String[] simPorts) {
+        int[] shootOrder = {1, 2, 0};
+        int patIdx = 0;
+        for (int idx : shootOrder) {
+            if (simPorts[idx] != null) {
+                if (!simPorts[idx].equals(currentPattern[patIdx])) return false;
+                patIdx++;
+            }
+        }
+        return patIdx == currentPattern.length;
     }
 
     public static void rotateForShooting(boolean sorting) {
@@ -274,30 +288,15 @@ public class Sorter {
             turnToPort(0);
             return;
         }
-        int greenIdx = getGreenBall();
-        if (greenIdx == -1) {
-            turnToPort(0);
-            return;
+        for (int startPort : new int[]{0, 1}) {
+            int turns = startPort - currentPort;
+            String[] simPorts = simulateShuffle(ports, turns);
+            if (matchesPattern(simPorts)) {
+                turnToPort(startPort);
+                return;
+            }
         }
-        String first = currentPattern[0].trim();
-        String second = currentPattern[1].trim();
-        String third = currentPattern[2].trim();
-
-        if (first.equals("green")) {
-            if (greenIdx == 0) turnToPort(0);
-            else if (greenIdx == 2) turnToPort(1);
-            else turnToPort(0);
-        } else if (second.equals("green")) {
-            if (greenIdx == 2) turnToPort(0);
-            else if (greenIdx == 1) turnToPort(1);
-            else turnToPort(0);
-        } else if (third.equals("green")) {
-            if (greenIdx == 1) turnToPort(0);
-            else if (greenIdx == 0) turnToPort(1);
-            else turnToPort(0);
-        } else {
-            turnToPort(0);
-        }
+        turnToPort(0);
     }
 
     public static boolean startTransfer() {
@@ -411,7 +410,8 @@ public class Sorter {
         if (getBallCount() == 0) return "No balls";
         StringBuilder sb = new StringBuilder();
         boolean first = true;
-        for (int i = 0; i < 3; i++) {
+        int[] shootOrder = {1, 2, 0};
+        for (int i : shootOrder) {
             if (ports[i] != null) {
                 if (!first) sb.append(" > ");
                 sb.append("unknown".equals(ports[i]) ? "???" : ports[i]);

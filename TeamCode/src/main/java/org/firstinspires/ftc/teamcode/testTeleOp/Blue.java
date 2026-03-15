@@ -40,6 +40,7 @@ public class Blue extends LinearOpMode {
     private double colorDetectStartTime = 0;
     private boolean manualSpinUsed = false;
     private boolean triggerSpindexerEnabled = false;
+    private boolean patternLocked = false;
     private double pendingSettleDelay = 0;
 
     private enum JamState { IDLE, OUTTAKING }
@@ -368,15 +369,6 @@ public class Blue extends LinearOpMode {
         }
         lastOptionsG2 = g2Options;
 
-        boolean g2DpadDown = gamepad2.dpad_down;
-        if (intakeMode != IntakeMode.SORTING) {
-            if (g2DpadDown && !lastDpadDownG2 && !Sorter.isTransferActive()) {
-                Sorter.removeBall();
-                manualSpinUsed = true;
-                if (shootingMode && Sorter.getBallCount() == 0) shootingMode = false;
-            }
-        }
-        lastDpadDownG2 = g2DpadDown;
     }
 
     private void handlePatternControls() {
@@ -391,36 +383,35 @@ public class Blue extends LinearOpMode {
         }
         lastDpadUpG2 = g2DpadUp;
 
-        if (intakeMode == IntakeMode.SORTING) {
-            boolean g2Left = gamepad2.dpad_left;
-            if (g2Left && !lastDpadLeftG2) {
-                Sorter.setPattern(new String[]{"purple", "purple", "green"});
-                gamepad2.rumble(0.5, 0.5, 200);
-            }
-            lastDpadLeftG2 = g2Left;
-
-            boolean g2Down = gamepad2.dpad_down;
-            if (g2Down && !lastDpadDownG2) {
-                Sorter.setPattern(new String[]{"purple", "green", "purple"});
-                gamepad2.rumble(0.5, 0.5, 200);
-            }
-            lastDpadDownG2 = g2Down;
-
-            boolean g2Right = gamepad2.dpad_right;
-            if (g2Right && !lastDpadRightG2) {
-                Sorter.setPattern(new String[]{"green", "purple", "purple"});
-                gamepad2.rumble(0.5, 0.5, 200);
-            }
-            lastDpadRightG2 = g2Right;
-        } else {
-            boolean g2Right = gamepad2.dpad_right;
-            if (g2Right && !lastDpadRightG2) {
-                Flywheel.FlywheelEquation.enableEquation = !Flywheel.FlywheelEquation.enableEquation;
-                Flywheel.resetRumble();
-                gamepad2.rumble(Flywheel.FlywheelEquation.enableEquation ? 0.8 : 0.3, Flywheel.FlywheelEquation.enableEquation ? 0.8 : 0.3, 200);
-            }
-            lastDpadRightG2 = g2Right;
+        boolean g2Left = gamepad2.dpad_left;
+        if (g2Left && !lastDpadLeftG2 && !patternLocked) {
+            Sorter.setPattern(new String[]{"purple", "purple", "green"});
+            Sorter.ShootingPattern.enablePatternMatching = true;
+            intakeMode = IntakeMode.SORTING;
+            patternLocked = true;
+            gamepad2.rumble(0.8, 0.8, 400);
         }
+        lastDpadLeftG2 = g2Left;
+
+        boolean g2Down = gamepad2.dpad_down;
+        if (g2Down && !lastDpadDownG2 && !patternLocked) {
+            Sorter.setPattern(new String[]{"purple", "green", "purple"});
+            Sorter.ShootingPattern.enablePatternMatching = true;
+            intakeMode = IntakeMode.SORTING;
+            patternLocked = true;
+            gamepad2.rumble(0.8, 0.8, 400);
+        }
+        lastDpadDownG2 = g2Down;
+
+        boolean g2Right = gamepad2.dpad_right;
+        if (g2Right && !lastDpadRightG2 && !patternLocked) {
+            Sorter.setPattern(new String[]{"green", "purple", "purple"});
+            Sorter.ShootingPattern.enablePatternMatching = true;
+            intakeMode = IntakeMode.SORTING;
+            patternLocked = true;
+            gamepad2.rumble(0.8, 0.8, 400);
+        }
+        lastDpadRightG2 = g2Right;
     }
 
     private void handleTransfer() {
@@ -439,23 +430,30 @@ public class Blue extends LinearOpMode {
     private void updateTelemetry(LLResult result) {
         boolean valid = result != null && result.isValid();
 
-        telemetry.addData("Intake", Intake.isToggled() ? "ON" : "OFF");
-        telemetry.addData("Mode", intakeMode.name());
-        telemetry.addData("Balls", Sorter.getBallCount() + "/3  " + Sorter.formatBallSlots());
-        telemetry.addData("Shoot", shootingMode ? "READY -> " + Sorter.formatShootingOrder() : "COLLECT");
-        telemetry.addData("Transfer", Sorter.isTransferActive() ? "SHOOTING" : Sorter.isTransferPending() ? "RESETTING" : "IDLE");
-        telemetry.addData("Sensors", sensorsEnabled ? "ON" : "WAITING");
-        telemetry.addData("Spindexer", (Sorter.getStep() == -1 ? "INIT" : "Slot " + (Sorter.getStep() + 1))
-                + " pos=" + String.format("%.3f", Sorter.getCurrentPos()));
-        telemetry.addData("Tracking", Turret.isTrackingEnabled() ? "ON" : "OFF");
-        telemetry.addData("Turret", Turret.getPosition() + " ticks");
-        telemetry.addData("Flywheel", String.format("%.0f / %.0f", Flywheel.getVelocity(), Flywheel.FlywheelPID.targetVelocity));
-        telemetry.addData("Color", Color.getLastDetected() != null ? Color.getLastDetected().toUpperCase() : "NONE");
-        telemetry.update();
-
         Color.readSensors();
         double[] cs1 = Color.getCS1();
         double[] cs2 = Color.getCS2();
+
+        telemetry.addData("Intake", Intake.isToggled() ? "ON" : "OFF");
+        telemetry.addData("Mode", intakeMode.name() + (Sorter.ShootingPattern.enablePatternMatching ? " [PATTERN]" : ""));
+        telemetry.addData("Balls", Sorter.getBallCount() + "/3  " + Sorter.formatBallSlots());
+        telemetry.addData("Shoot", shootingMode ? "READY -> " + Sorter.formatShootingOrder() : "COLLECT");
+        telemetry.addData("Transfer", Sorter.isTransferActive() ? "SHOOTING" : Sorter.isTransferPending() ? "RESETTING" : "IDLE");
+        telemetry.addData("Flywheel", String.format("%.0f / %.0f  eq=%s", Flywheel.getVelocity(), Flywheel.FlywheelPID.targetVelocity,
+                Flywheel.FlywheelEquation.enableEquation ? "ON" : "OFF"));
+        telemetry.addData("Tracking", Turret.isTrackingEnabled() ? "ON" : "OFF");
+        telemetry.addData("Turret", Turret.getPosition() + " ticks");
+        telemetry.addData("Spindexer", (Sorter.getStep() == -1 ? "INIT" : "Slot " + (Sorter.getStep() + 1))
+                + " pos=" + String.format("%.3f", Sorter.getCurrentPos()));
+        telemetry.addData("Ranger", String.format("%.2f in", BallDetector.getRangerDistanceIn()));
+        telemetry.addData("CS1 Dist", BallDetector.hasCS1Distance() ? String.format("%.1f mm", BallDetector.getCS1DistanceMm()) : "N/A");
+        telemetry.addData("CS2 Dist", BallDetector.hasCS2Distance() ? String.format("%.1f mm", BallDetector.getCS2DistanceMm()) : "N/A");
+        telemetry.addData("CS1", String.format("R%.3f G%.3f B%.3f %s", cs1[0], cs1[1], cs1[2],
+                Color.isCS1Green() ? "GREEN" : Color.isCS1Purple() ? "PURPLE" : ""));
+        telemetry.addData("CS2", String.format("R%.3f G%.3f B%.3f %s", cs2[0], cs2[1], cs2[2],
+                Color.isCS2Green() ? "GREEN" : Color.isCS2Purple() ? "PURPLE" : ""));
+        telemetry.addData("Color", Color.getLastDetected() != null ? Color.getLastDetected().toUpperCase() : "NONE");
+        telemetry.update();
 
         panelsTelemetry.addData("=== COLOR SENSOR ONE ===", Color.ColorConfig.enableSensor1 ? "ENABLED" : "DISABLED");
         panelsTelemetry.addData("CS1 Gain", Color.ColorSensor1.gain);
@@ -495,7 +493,7 @@ public class Blue extends LinearOpMode {
         panelsTelemetry.addData("Mode", intakeMode.name());
         panelsTelemetry.addData("Balls", Sorter.getBallCount() + "/3  " + Sorter.formatBallSlots());
         panelsTelemetry.addData("Shoot Order", Sorter.formatShootingOrder());
-        panelsTelemetry.addData("Pattern", String.join(" > ", Sorter.getCurrentPattern()));
+        panelsTelemetry.addData("Pattern", String.join(" > ", Sorter.getCurrentPattern()) + (patternLocked ? "  [LOCKED]" : "  [unlocked]"));
         panelsTelemetry.addData("Pattern Match", Sorter.ShootingPattern.enablePatternMatching ? "ON" : "OFF");
         panelsTelemetry.addData("", "");
 
